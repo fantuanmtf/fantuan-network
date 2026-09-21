@@ -18,10 +18,8 @@ cargo run --release -p fantuan-sim -- run \
     --out "${JSON}"
 
 echo "== analysing simulation transcript =="
-python3 -m fantuan_analysis \
+PYTHONPATH="${PYTHONPATH:-analysis/src}" python3 -m fantuan_analysis \
     --input "${JSON}" \
-    --out "${OUT_DIR}/anonymity-${SCENARIO}-${SEED}.md" || {
-    echo "[warn] Python analyzer unavailable; JSON transcript kept at ${JSON}"
-}
+    --out "${OUT_DIR}/anonymity-${SCENARIO}-${SEED}.md"
 
 echo "== done =="

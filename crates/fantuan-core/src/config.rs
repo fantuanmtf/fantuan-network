@@ -30,6 +30,8 @@ pub struct NodeConfig {
     pub handshake_timeout_secs: u64,
     /// Idle connection timeout in seconds.
     pub idle_timeout_secs: u64,
+    /// Peer destinations dialed on startup (I2P base64 or hostnames).
+    pub peers: Vec<String>,
 }
 
 impl Default for NodeConfig {
@@ -41,6 +43,7 @@ impl Default for NodeConfig {
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
             handshake_timeout_secs: 10,
             idle_timeout_secs: 120,
+            peers: Vec::new(),
         }
     }
 }

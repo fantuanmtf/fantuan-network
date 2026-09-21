@@ -14,9 +14,6 @@ snow.workspace = true
 yosemite.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-zeroize.workspace = true
-getrandom.workspace = true
-hex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

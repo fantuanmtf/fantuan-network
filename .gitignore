@@ -8,4 +8,5 @@ __pycache__/
 .pytest_cache/
 .venv/
 analysis/dist/
-reports/*.tmp
+reports/*
+!reports/.gitkeep

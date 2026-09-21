@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 1 in progress.
+Status: Phase 1 complete.
 
 ## 1. Strategy
 
@@ -37,20 +37,22 @@ English documentation skeleton, I2P development helper, git remotes.
 
 Exit: CI green; conventions enforced.
 
-### Phase 1 — Foundation stack (in progress)
+### Phase 1 — Foundation stack (done)
 1. `fantuan-core`: errors, configuration, secure file I/O, time helpers.
 2. `fantuan-identity`: OpenPGP key hierarchy, descriptor creation and
-   verification, trust graph storage (SQLite).
+   verification, identity binding, trust graph storage (SQLite).
 3. `fantuan-msg`: canonical CBOR object envelope, detached signatures,
    size caps.
-4. `fantuan-transport`: SAM session wrapper, Noise XX sessions, identity
-   binding, connection pool.
-5. `fantuan-sim`: discrete-event core (virtual clock, event queue, seeded
-   RNG, metric primitives).
-6. `fantuan-node`: CLI (`identity init|show|export|import`, `run`, `ping`).
+4. `fantuan-transport`: SAM session wrapper, Noise XX sessions, connection
+   pool; live SAM tests behind `--ignored`.
+5. `fantuan-sim` + `analysis/`: discrete-event core (virtual clock, event
+   queue, seeded RNG, metrics) and the Python report pipeline.
+6. `fantuan-node`: CLI (`identity init|show|export|import`, `run`, `ping`,
+   `config`).
 
-Exit: two nodes complete an authenticated Noise session over real I2P and
-exchange CBOR messages; spoofing, replay and tamper tests pass.
+Exit met: two nodes complete an authenticated Noise session over real I2P
+and exchange a CBOR message (`crates/fantuan-node/tests/i2p_session.rs`);
+spoofing, replay, tamper and oversize tests pass.
 
 ### Phase 2 — Peer-to-peer
 Descriptor exchange discovery (bootstrap list plus trust-weighted gossip),

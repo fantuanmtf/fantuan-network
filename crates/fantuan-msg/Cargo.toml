@@ -11,11 +11,11 @@ repository.workspace = true
 fantuan-core.workspace = true
 fantuan-identity.workspace = true
 serde.workspace = true
+serde_bytes.workspace = true
 ciborium.workspace = true
 thiserror.workspace = true
 blake3.workspace = true
 sequoia-openpgp.workspace = true
-hex.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

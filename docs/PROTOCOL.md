@@ -55,12 +55,14 @@ Immediately after the Noise handshake, each side sends one encrypted
 binding_message = "fantuan-identity-binding-v1"
                   || handshake_hash (32 bytes)
                   || local_noise_static_pub (32 bytes)
+                  || BLAKE3(canonical_descriptor) (32 bytes)
 ```
 
 - `handshake_hash` comes from the local Noise state and is identical on both
   sides.
 - The binding carries the sender's descriptor and an OpenPGP detached
-  signature over `binding_message`.
+  signature over `binding_message`; including the descriptor hash means every
+  descriptor field is covered by the signature.
 
 A peer MUST be rejected when:
 

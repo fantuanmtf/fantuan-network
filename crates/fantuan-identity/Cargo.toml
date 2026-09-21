@@ -11,11 +11,12 @@ repository.workspace = true
 fantuan-core.workspace = true
 sequoia-openpgp.workspace = true
 rusqlite.workspace = true
-serde.workspace = true
 ciborium.workspace = true
 thiserror.workspace = true
-hex.workspace = true
+blake3.workspace = true
 getrandom.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
