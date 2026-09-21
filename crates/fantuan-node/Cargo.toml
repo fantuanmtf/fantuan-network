@@ -24,6 +24,7 @@ tracing-subscriber.workspace = true
 hex.workspace = true
 sequoia-openpgp.workspace = true
 yosemite.workspace = true
+serde_bytes.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

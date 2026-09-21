@@ -14,8 +14,9 @@ Transport (I2P Tunnel / Noise / Session Manager)
 Network Node (Peer Discovery / Routing / Relay)
 ```
 
-**Status:** Phase 1 complete — OpenPGP identity and descriptors, CBOR message
-envelope, I2P SAM v3 + Noise sessions with identity binding, node CLI, and
+**Status:** Phase 2 complete — OpenPGP identity and descriptors, CBOR message
+envelope, I2P SAM v3 + Noise sessions with identity binding, signed trust
+graph, gossip discovery, end-to-end encrypted relay routing, node CLI, and
 the offline simulation/analysis pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Repository layout

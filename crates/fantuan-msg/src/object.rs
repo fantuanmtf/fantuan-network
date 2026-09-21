@@ -6,8 +6,9 @@
 //! and trailing bytes are rejected.
 
 use crate::error::{MsgError, Result};
+use crate::gossip::Gossip;
 use crate::message::Message;
-use sequoia_openpgp::Cert;
+use crate::relay::Relay;
 use serde::{Deserialize, Serialize};
 
 /// Maximum encoded object size (64 KiB), matching the session frame limit.
@@ -31,6 +32,10 @@ pub enum Object {
         /// Echo of the ping timestamp.
         timestamp: u64,
     },
+    /// Peer descriptors and trust vouches.
+    Gossip(Gossip),
+    /// End-to-end encrypted relay envelope.
+    Relay(Relay),
 }
 
 impl Object {
@@ -66,15 +71,11 @@ impl Object {
         if reencoded != bytes {
             return Err(MsgError::Encoding("object is not canonical".to_string()));
         }
-        Ok(object)
-    }
 
-    /// Verify the object's cryptographic material.
-    pub fn verify(&self, cert: &Cert) -> Result<()> {
-        match self {
-            Object::Message(message) => message.verify(cert),
-            Object::Ping { .. } | Object::Pong { .. } => Ok(()),
+        if let Object::Gossip(gossip) = &object {
+            gossip.validate_limits()?;
         }
+        Ok(object)
     }
 }
 
@@ -144,12 +145,41 @@ mod tests {
     fn verify_message_object() {
         let (identity, object) = message_object();
         let cert = cert_from_bytes(&identity.public_cert_bytes().unwrap()).unwrap();
-        object.verify(&cert).expect("verify");
+        match &object {
+            Object::Message(message) => message.verify(&cert).expect("verify"),
+            other => panic!("unexpected object: {other:?}"),
+        }
 
         let mut tampered = object.clone();
         if let Object::Message(message) = &mut tampered {
             message.payload = serde_bytes::ByteBuf::from(b"evil".to_vec());
         }
-        assert!(tampered.verify(&cert).is_err());
+        match &tampered {
+            Object::Message(message) => assert!(message.verify(&cert).is_err()),
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn roundtrip_gossip() {
+        let gossip = Gossip {
+            announcements: vec![crate::gossip::Announcement::new(vec![1, 2, 3], vec![4, 5])],
+            vouches: vec![],
+        };
+        let object = Object::Gossip(gossip);
+        let bytes = object.to_canonical_bytes().expect("encode");
+        let parsed = Object::from_canonical_bytes(&bytes).expect("decode");
+        assert_eq!(parsed, object);
+    }
+
+    #[test]
+    fn roundtrip_relay() {
+        let identity = Identity::generate("relay-origin", "dest").expect("identity");
+        let relay =
+            crate::relay::Relay::create(&identity, "DEST", 1, vec![9, 8, 7]).expect("relay");
+        let object = Object::Relay(relay);
+        let bytes = object.to_canonical_bytes().expect("encode");
+        let parsed = Object::from_canonical_bytes(&bytes).expect("decode");
+        assert_eq!(parsed, object);
     }
 }

@@ -9,6 +9,7 @@
 | Impersonator | knows a peer fingerprint, not its key | OpenPGP certificate verification; handshake binding; no unauthenticated sessions |
 | Replay attacker | re-sends recorded frames | Noise nonces; session binding over handshake hash |
 | Malicious peer | sends crafted descriptors/objects | strict decoding, size caps, canonical CBOR, signature verification before use |
+| Malicious relay | forwards forged or replayed envelopes | per-hop signature checks, TOFU pins, monotonic nonces, freshness window, rate limits, hop limit |
 | Local attacker | reads files on disk | secrets stored 0600, directories 0700, secrets zeroized on drop |
 
 The old Chrono-shift repository carries known vulnerabilities and is
@@ -23,7 +24,13 @@ reference-only. No code is merged from it without re-derivation and tests.
 4. Every parser (CBOR, descriptor, frame header) has explicit size caps.
 5. Signature checks use the verifier's stored/parsed key, never a key chosen
    by the attacker in the same message.
-6. Trust decisions (Phase 2) never consume an unverified signature.
+6. Trust decisions (Phase 2) never consume an unverified signature: gossip
+   descriptors must verify their self-signature and vouches must verify
+   against the signer's stored certificate.
+7. Relay payloads are OpenPGP-encrypted to the destination; intermediate
+   hops can verify the origin but cannot read content.
+8. Relay admission is keyed by the verified origin fingerprint and TOFU-pins
+   the origin certificate, so claimed identities cannot multiply quotas.
 
 ## 3. Key handling
 
@@ -35,14 +42,17 @@ reference-only. No code is merged from it without re-derivation and tests.
 - Files are created with restrictive permissions from the first write.
 - Secret buffers use `zeroize` where the type system allows it.
 
-## 4. Known limitations (Phase 1)
+## 4. Known limitations (Phase 2)
 
 - I2P anonymity assumptions are inherited from the local i2pd router.
-- Message metadata (sender fingerprint, timestamp, size) is visible to the
-  peer and to I2P; DC-Net and traffic shaping arrive in Phase 5.
+- Relay metadata (origin fingerprint, destination fingerprint, timing, size)
+  is visible to every hop; DC-Net and traffic shaping arrive in Phase 5.
+- Gossip reveals the local peer list to direct peers; propagation is
+  bounded but not differentially private.
+- Trust scoring uses locally stored vouches; revoked or stale vouches are not
+  yet expired automatically.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake
   and rekeys after the configured frame budget.
-- Trust graph storage exists but scoring and gossip are Phase 2.
 
 ## 5. Reporting
 

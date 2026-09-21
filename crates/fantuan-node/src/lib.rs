@@ -3,9 +3,15 @@
 //! The binary is a thin CLI wrapper around these modules so integration
 //! tests can drive the same code paths.
 
+pub mod admission;
+pub mod connection;
+pub mod gossip;
 pub mod identity_cmd;
 pub mod peer;
+pub mod relay;
 pub mod run;
+pub mod send;
+pub mod state;
 
 use anyhow::Result;
 use fantuan_core::config::NodeConfig;

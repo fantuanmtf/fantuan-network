@@ -1,14 +1,13 @@
 //! Authenticated peer sessions.
 //!
 //! `handshake_*` runs the Noise handshake and the identity binding, so the
-//! returned `BoundPeer` is authenticated. `serve` is the object loop used by
-//! long-lived connections.
+//! returned `BoundPeer` is authenticated. The live object loop lives in
+//! [`crate::connection`].
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use fantuan_identity::{
     Descriptor, Identity, create_binding, keys::cert_from_bytes, verify_binding,
 };
-use fantuan_msg::Object;
 use fantuan_transport::{HandshakeOutcome, NoiseSession, handshake_initiator, handshake_responder};
 use sequoia_openpgp::Cert;
 use std::time::Duration;
@@ -98,39 +97,4 @@ where
         descriptor,
         cert,
     })
-}
-
-/// Run the object loop until the peer disconnects or stays idle too long.
-///
-/// Incoming messages are signature-verified before they are surfaced.
-pub async fn serve<S>(stream: &mut S, peer: &mut BoundPeer, idle: Duration) -> Result<()>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    loop {
-        let bytes = tokio::time::timeout(idle, peer.session.recv(stream))
-            .await
-            .context("peer idle timeout")??;
-
-        match Object::from_canonical_bytes(&bytes) {
-            Ok(Object::Message(message)) => {
-                message
-                    .verify(&peer.cert)
-                    .context("message signature rejected")?;
-                let text = String::from_utf8_lossy(&message.payload);
-                tracing::info!(peer = peer.descriptor.uid, "message received: {}", text);
-                println!("[{}] {}", peer.descriptor.uid, text);
-            }
-            Ok(Object::Ping { timestamp, .. }) => {
-                let pong = Object::Pong { timestamp }.to_canonical_bytes()?;
-                peer.session.send(stream, &pong).await?;
-            }
-            Ok(Object::Pong { .. }) => {
-                tracing::debug!(peer = peer.descriptor.uid, "pong received");
-            }
-            Err(error) => {
-                bail!("protocol violation from {}: {error}", peer.descriptor.uid);
-            }
-        }
-    }
 }

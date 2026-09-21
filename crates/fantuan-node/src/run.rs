@@ -1,16 +1,19 @@
-//! Node runtime: inbound accept loop, outbound peer loops and `ping`.
+//! Node runtime: inbound accept loop, outbound peer loops, `ping` and the
+//! operator event stream.
 
+use crate::connection;
 use crate::identity_cmd;
 use crate::peer;
+use crate::state::{NodeEvent, NodeState};
 use anyhow::{Context, Result, anyhow, bail};
 use fantuan_core::{config::NodeConfig, time};
-use fantuan_identity::{Identity, TrustStore};
+use fantuan_identity::TrustStore;
 use fantuan_msg::{Message, Object};
 use fantuan_transport::sam::{SamConfig, SamSession};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 
 static OUTBOUND_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -35,15 +38,27 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
         .context("cannot open SAM session (is i2pd running with SAM enabled?)")?;
     let destination = inbound.destination().to_string();
 
-    let trust = Arc::new(Mutex::new(TrustStore::open(&config.trust_db_path())?));
+    let trust = TrustStore::open(&config.trust_db_path())?;
+    let (events_tx, mut events_rx) = mpsc::unbounded_channel();
+    let state = NodeState::new(identity.clone(), config.clone(), trust, events_tx);
 
     println!("fantuan-node running");
     println!("  uid:         {}", identity.descriptor().uid);
     println!("  fingerprint: {}", identity.fingerprint_hex());
     println!("  destination: {destination}");
 
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    tokio::spawn(async move {
+        while let Some(event) = events_rx.recv().await {
+            match event {
+                NodeEvent::Message { from, text } => println!("[{}] {}", short(&from), text),
+                NodeEvent::Received { from } => {
+                    println!("[relay] envelope delivered from {}", short(&from));
+                }
+            }
+        }
+    });
 
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown = shutdown_tx.clone();
     tokio::spawn(async move {
         if tokio::signal::ctrl_c().await.is_ok() {
@@ -52,19 +67,10 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
         }
     });
 
-    let accept_identity = identity.clone();
-    let accept_trust = trust.clone();
-    let accept_config = config.clone();
+    let accept_state = state.clone();
     let accept_shutdown = shutdown_rx.clone();
     tokio::spawn(async move {
-        accept_loop(
-            inbound,
-            accept_identity,
-            accept_trust,
-            accept_config,
-            accept_shutdown,
-        )
-        .await;
+        accept_loop(inbound, accept_state, accept_shutdown).await;
     });
 
     let mut peers = config.peers.clone();
@@ -72,19 +78,10 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
     peers.sort();
     peers.dedup();
     for destination in peers {
-        let out_identity = identity.clone();
-        let out_trust = trust.clone();
-        let out_config = config.clone();
+        let out_state = state.clone();
         let out_shutdown = shutdown_rx.clone();
         tokio::spawn(async move {
-            outbound_loop(
-                destination,
-                out_identity,
-                out_trust,
-                out_config,
-                out_shutdown,
-            )
-            .await;
+            outbound_loop(destination, out_state, out_shutdown).await;
         });
     }
 
@@ -101,20 +98,7 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
 /// Connect to a peer, handshake, optionally send a message, then ping.
 pub async fn ping(config: &NodeConfig, destination: &str, message: Option<&str>) -> Result<()> {
     let identity = identity_cmd::load_identity(config)?;
-    let port = SamConfig::from_addr(&config.sam_addr)?.port;
-    let outbound_config = SamConfig {
-        port,
-        nickname: format!(
-            "fantuan-out-{}-{}",
-            std::process::id(),
-            OUTBOUND_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ),
-        publish: false,
-    };
-
-    let mut session = SamSession::open(&outbound_config, None)
-        .await
-        .context("cannot open SAM session")?;
+    let mut session = open_transient(config, "ping").await?;
     let mut stream = session
         .connect(destination)
         .await
@@ -158,11 +142,26 @@ pub async fn ping(config: &NodeConfig, destination: &str, message: Option<&str>)
     }
 }
 
+/// Open a transient (non-published) SAM session.
+pub async fn open_transient(config: &NodeConfig, label: &str) -> Result<SamSession> {
+    let port = SamConfig::from_addr(&config.sam_addr)?.port;
+    let outbound_config = SamConfig {
+        port,
+        nickname: format!(
+            "fantuan-{label}-{}-{}",
+            std::process::id(),
+            OUTBOUND_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ),
+        publish: false,
+    };
+    SamSession::open(&outbound_config, None)
+        .await
+        .context("cannot open SAM session")
+}
+
 async fn accept_loop(
     mut session: SamSession,
-    identity: Arc<Identity>,
-    trust: Arc<Mutex<TrustStore>>,
-    config: NodeConfig,
+    state: Arc<NodeState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     loop {
@@ -171,11 +170,9 @@ async fn accept_loop(
             accepted = session.accept() => {
                 match accepted {
                     Ok(stream) => {
-                        let identity = identity.clone();
-                        let trust = trust.clone();
-                        let config = config.clone();
+                        let state = state.clone();
                         tokio::spawn(async move {
-                            if let Err(error) = handle_inbound(stream, &identity, &trust, &config).await {
+                            if let Err(error) = handle_inbound(stream, state).await {
                                 tracing::warn!("inbound session ended: {error:#}");
                             }
                         });
@@ -190,33 +187,21 @@ async fn accept_loop(
     }
 }
 
-async fn handle_inbound(
-    mut stream: yosemite::Stream,
-    identity: &Identity,
-    trust: &Mutex<TrustStore>,
-    config: &NodeConfig,
-) -> Result<()> {
-    let mut peer = peer::handshake_server(
+async fn handle_inbound(mut stream: yosemite::Stream, state: Arc<NodeState>) -> Result<()> {
+    let peer = peer::handshake_server(
         &mut stream,
-        identity,
-        Duration::from_secs(config.handshake_timeout_secs),
+        &state.identity,
+        Duration::from_secs(state.config.handshake_timeout_secs),
     )
     .await?;
-    pin_peer(trust, &peer)?;
+    pin_peer(&state, &peer)?;
     tracing::info!(peer = peer.descriptor.uid, "inbound session established");
-    peer::serve(
-        &mut stream,
-        &mut peer,
-        Duration::from_secs(config.idle_timeout_secs),
-    )
-    .await
+    connection::run(state, stream, peer).await
 }
 
 async fn outbound_loop(
     destination: String,
-    identity: Arc<Identity>,
-    trust: Arc<Mutex<TrustStore>>,
-    config: NodeConfig,
+    state: Arc<NodeState>,
     mut shutdown: watch::Receiver<bool>,
 ) {
     let mut backoff = Duration::from_secs(1);
@@ -224,7 +209,7 @@ async fn outbound_loop(
         if *shutdown.borrow() {
             break;
         }
-        match connect_once(&destination, &identity, &trust, &config).await {
+        match connect_once(&destination, &state).await {
             Ok(()) => {
                 tracing::info!(%destination, "outbound session closed");
                 backoff = Duration::from_secs(1);
@@ -241,42 +226,25 @@ async fn outbound_loop(
     }
 }
 
-async fn connect_once(
-    destination: &str,
-    identity: &Identity,
-    trust: &Mutex<TrustStore>,
-    config: &NodeConfig,
-) -> Result<()> {
-    let port = SamConfig::from_addr(&config.sam_addr)?.port;
-    let outbound_config = SamConfig {
-        port,
-        nickname: format!(
-            "fantuan-out-{}-{}",
-            std::process::id(),
-            OUTBOUND_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ),
-        publish: false,
-    };
-    let mut session = SamSession::open(&outbound_config, None).await?;
+async fn connect_once(destination: &str, state: &Arc<NodeState>) -> Result<()> {
+    let mut session = open_transient(&state.config, "out").await?;
     let mut stream = session.connect(destination).await?;
-    let mut peer = peer::handshake_client(
+    let peer = peer::handshake_client(
         &mut stream,
-        identity,
-        Duration::from_secs(config.handshake_timeout_secs),
+        &state.identity,
+        Duration::from_secs(state.config.handshake_timeout_secs),
     )
     .await?;
-    pin_peer(trust, &peer)?;
+    pin_peer(state, &peer)?;
     tracing::info!(peer = peer.descriptor.uid, "outbound session established");
-    peer::serve(
-        &mut stream,
-        &mut peer,
-        Duration::from_secs(config.idle_timeout_secs),
-    )
-    .await
+    connection::run(state.clone(), stream, peer).await
 }
 
-fn pin_peer(trust: &Mutex<TrustStore>, peer: &peer::BoundPeer) -> Result<()> {
-    let store = trust.lock().map_err(|_| anyhow!("trust store poisoned"))?;
+fn pin_peer(state: &Arc<NodeState>, peer: &peer::BoundPeer) -> Result<()> {
+    let store = state
+        .trust
+        .lock()
+        .map_err(|_| anyhow!("trust store poisoned"))?;
     store.upsert_peer(
         peer.fingerprint(),
         peer.uid(),
@@ -284,4 +252,8 @@ fn pin_peer(trust: &Mutex<TrustStore>, peer: &peer::BoundPeer) -> Result<()> {
         time::now_unix(),
     )?;
     Ok(())
+}
+
+fn short(fingerprint: &str) -> &str {
+    fingerprint.get(..8).unwrap_or(fingerprint)
 }

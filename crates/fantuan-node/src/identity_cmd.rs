@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use fantuan_core::{config::NodeConfig, fs as secure_fs, time};
-use fantuan_identity::{Descriptor, Identity, TrustStore};
+use fantuan_identity::{Descriptor, Identity, PeerRecord, TrustGraph, TrustStore, TrustVouch};
 use fantuan_transport::sam::{SamConfig, generate_destination};
 use std::path::{Path, PathBuf};
 
@@ -121,7 +121,41 @@ pub fn import(
 }
 
 /// List peers recorded in the trust store.
-pub fn list_peers(config: &NodeConfig) -> Result<usize> {
+pub fn list_peers(config: &NodeConfig) -> Result<Vec<PeerRecord>> {
     let store = TrustStore::open(&config.trust_db_path())?;
-    Ok(store.peer_count()? as usize)
+    Ok(store.peers(10_000)?)
+}
+
+/// Create a locally signed trust vouch for a peer (fingerprint or uid).
+///
+/// Returns the resolved peer fingerprint.
+pub fn set_trust(config: &NodeConfig, target: &str, level: u8) -> Result<String> {
+    let identity = load_identity(config)?;
+    let store = TrustStore::open(&config.trust_db_path())?;
+    let fingerprint = resolve_peer(&store, target)?;
+    let now = time::now_unix();
+    let vouch = TrustVouch::create(&identity, &fingerprint, level, now)?;
+    store.set_relationship(
+        &identity.fingerprint_hex(),
+        &fingerprint,
+        level,
+        now,
+        &vouch.signature,
+    )?;
+
+    let mut graph = TrustGraph::new(&store, identity.fingerprint_hex());
+    graph.refresh_scores()?;
+    Ok(fingerprint)
+}
+
+fn resolve_peer(store: &TrustStore, target: &str) -> Result<String> {
+    if store.get_peer(target)?.is_some() {
+        return Ok(target.to_string());
+    }
+    for peer in store.peers(10_000)? {
+        if peer.uid == target {
+            return Ok(peer.fingerprint);
+        }
+    }
+    bail!("unknown peer {target:?}; import or discover its descriptor first")
 }

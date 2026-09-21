@@ -92,6 +92,8 @@ text tag:
 | `delete_request` | `DeleteRequest` (Phase 3) |
 | `ping` | monotonic uint + timestamp |
 | `pong` | echo of the ping timestamp |
+| `gossip` | descriptors + trust vouches (section 6) |
+| `relay` | end-to-end encrypted relay envelope (section 7) |
 
 `Message` fields:
 
@@ -112,7 +114,50 @@ body = "fantuan-message-v1" || canonical_cbor(Message without id, signature)
 Size caps (Phase 1): descriptor ≤ 64 KiB, frame ≤ 64 KiB, message payload
 ≤ 32 KiB.
 
-## 6. Failure handling
+## 6. Gossip
+
+Immediately after a session is established, each side sends one `gossip`
+object:
+
+```
+Gossip { announcements: [Announcement; <=64], vouches: [TrustVouch; <=256] }
+Announcement { descriptor: bytes, signature: bytes }   # self-signed descriptor
+TrustVouch   { signer, subject, level, timestamp, signature }
+```
+
+- A node always includes its own descriptor with its detached self-signature.
+- Receivers verify each announcement with `Descriptor::verify` and each vouch
+  against the signer's stored certificate before storing anything.
+- Newly learned descriptors are stored as `fingerprint -> descriptor` and the
+  route `fingerprint -> sender` is recorded for relaying.
+- When a gossip message teaches a node something new, it replies with its
+  updated list and pushes it to its other peers, so knowledge propagates.
+  A message that teaches nothing new is never echoed.
+
+## 7. Relay
+
+```
+Relay { origin, to, nonce, timestamp, hops_left, signature, payload }
+```
+
+- `payload` is an OpenPGP message encrypted to the destination's
+  transport-encryption subkey (`encrypt_for`), so relays never see plaintext.
+- `signature` is the originator's detached OpenPGP signature over
+
+  ```
+  "fantuan-relay-v1" || len(origin) || origin || len(to) || to
+                     || nonce || timestamp || len(payload) || payload
+  ```
+
+  `hops_left` is excluded so relays can decrement it.
+- Admission per origin fingerprint: strictly increasing nonces, a ±60 s
+  freshness window, at most 60 envelopes per 60 s window, TOFU certificate
+  pinning, and at most 8 hops.
+- The destination decrypts the payload and processes the inner object; a
+  relay with `to` different from the local fingerprint is forwarded to the
+  next hop one hop closer (`hops_left - 1`).
+
+## 8. Failure handling
 
 - Handshake timeout: 10 seconds.
 - Idle read timeout: 120 seconds.

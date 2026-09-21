@@ -177,6 +177,13 @@ impl Identity {
             .map_err(|e| IdentityError::OpenPgp(e.to_string()))
     }
 
+    /// Clone of the full certificate (including secret key material).
+    ///
+    /// Use only for local cryptographic operations; never send this to peers.
+    pub fn certificate(&self) -> Cert {
+        self.cert.clone()
+    }
+
     /// The node descriptor.
     pub fn descriptor(&self) -> &Descriptor {
         &self.descriptor

@@ -1,0 +1,106 @@
+//! Live connection loop.
+//!
+//! Each established session runs one task that owns the stream and Noise
+//! state. It multiplexes inbound objects with outbound frames queued in the
+//! connection pool, so other tasks (gossip, relaying) can send without
+//! touching the session.
+
+use crate::peer::BoundPeer;
+use crate::state::{NodeEvent, NodeState};
+use anyhow::{Result, anyhow};
+use fantuan_msg::Object;
+use fantuan_transport::DEFAULT_WRITER_QUEUE;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+/// Drive one authenticated connection until it closes or goes idle.
+pub async fn run<S>(state: Arc<NodeState>, mut stream: S, mut peer: BoundPeer) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let idle = Duration::from_secs(state.config.idle_timeout_secs);
+    let (handle, mut outbound) = state
+        .pool
+        .register(peer.fingerprint(), DEFAULT_WRITER_QUEUE)?;
+    state.record_route(peer.fingerprint(), peer.fingerprint());
+
+    // Offer our gossip right after the handshake.
+    let gossip = crate::gossip::build(&state);
+    if !gossip.is_empty() {
+        let bytes = Object::Gossip(gossip).to_canonical_bytes()?;
+        peer.session.send(&mut stream, &bytes).await?;
+    }
+
+    let result = loop {
+        tokio::select! {
+            incoming = tokio::time::timeout(idle, peer.session.recv(&mut stream)) => match incoming {
+                Ok(Ok(bytes)) => {
+                    if let Err(error) = handle_object(&state, &mut peer, &mut stream, &bytes).await {
+                        break Err(error);
+                    }
+                }
+                Ok(Err(error)) => break Err(error.into()),
+                Err(_) => break Err(anyhow!("peer idle timeout")),
+            },
+            outgoing = outbound.recv() => match outgoing {
+                Some(payload) => {
+                    if let Err(error) = peer.session.send(&mut stream, &payload).await {
+                        break Err(error.into());
+                    }
+                }
+                None => break Ok(()),
+            },
+        }
+    };
+
+    state.pool.remove(peer.fingerprint(), handle.connection_id);
+    result
+}
+
+async fn handle_object<S>(
+    state: &Arc<NodeState>,
+    peer: &mut BoundPeer,
+    stream: &mut S,
+    bytes: &[u8],
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    match Object::from_canonical_bytes(bytes)? {
+        Object::Message(message) => {
+            message.verify(&peer.cert)?;
+            let text = String::from_utf8_lossy(&message.payload).to_string();
+            tracing::info!(from = peer.descriptor.uid, "message received: {text}");
+            state.emit(NodeEvent::Message {
+                from: message.sender.clone(),
+                text,
+            });
+        }
+        Object::Ping { timestamp, .. } => {
+            let pong = Object::Pong { timestamp }.to_canonical_bytes()?;
+            peer.session.send(stream, &pong).await?;
+        }
+        Object::Pong { .. } => {
+            tracing::debug!(peer = peer.descriptor.uid, "pong received");
+        }
+        Object::Gossip(gossip) => {
+            let accepted = crate::gossip::handle(state, peer.fingerprint(), &gossip)?;
+            tracing::info!(peer = peer.descriptor.uid, accepted, "gossip received");
+            if accepted > 0 {
+                // We learned something new: reply with our updated list and
+                // push it to other peers so knowledge propagates.
+                let reply = crate::gossip::build(state);
+                if !reply.is_empty() {
+                    let bytes = Object::Gossip(reply).to_canonical_bytes()?;
+                    peer.session.send(stream, &bytes).await?;
+                }
+                crate::gossip::broadcast(state, peer.fingerprint());
+            }
+        }
+        Object::Relay(relay) => {
+            crate::relay::handle(state, peer, relay)?;
+        }
+    }
+    Ok(())
+}

@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 1 complete.
+Status: Phase 2 complete.
 
 ## 1. Strategy
 
@@ -54,11 +54,21 @@ Exit met: two nodes complete an authenticated Noise session over real I2P
 and exchange a CBOR message (`crates/fantuan-node/tests/i2p_session.rs`);
 spoofing, replay, tamper and oversize tests pass.
 
-### Phase 2 — Peer-to-peer
-Descriptor exchange discovery (bootstrap list plus trust-weighted gossip),
-SQLite trust graph scoring, signed messaging, router and relay.
+### Phase 2 — Peer-to-peer (done)
+1. Signed trust vouches (`TrustVouch`) and fixed-point `TrustGraph` scoring.
+2. Gossip exchange of self-signed descriptors and vouches with verified
+   ingestion and bounded propagation.
+3. Relay envelopes with end-to-end OpenPGP payload encryption, per-origin
+   admission control (nonces, freshness, rate limit, TOFU, hop limit) and
+   next-hop routing.
+4. Connection loop multiplexing inbound objects with an outbound queue, so
+   gossip and relays can be sent from any task.
+5. CLI: `send --to --via --message`, `peers`, `trust set --target --level`.
 
-Exit: three-node network; trust chain queryable; relayed message delivered.
+Exit met: three nodes form a network, learn each other through gossip, and a
+message is relayed from A to C through B — proven both with an in-memory
+duplex test and over real I2P
+(`crates/fantuan-node/tests/relay_loopback.rs`, `tests/i2p_session.rs`).
 
 ### Phase 3 — BBS/IRC and client
 Channels, forum posts, offline messages, TUI, local IRC bridge.

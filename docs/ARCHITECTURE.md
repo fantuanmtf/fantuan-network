@@ -60,6 +60,14 @@ Crates are added when their phase starts; no placeholder crates are kept.
 7. **Offline verification.** Anonymity properties are measured with a
    discrete-event simulator (Rust) plus a Python statistical analyzer, so
    claims are reproducible without a network.
+8. **Verified gossip.** Peers exchange self-signed descriptors and signed
+   trust vouches after every handshake; ingestion verifies signatures before
+   storage, and newly learned descriptors propagate with bounded echo
+   suppression.
+9. **Relay with end-to-end encryption.** A relay envelope carries a payload
+   encrypted to the destination's OpenPGP subkey; every hop verifies the
+   origin's signature and admission state, then forwards one hop closer.
+   Routing tables are learned from gossip (`destination -> next hop`).
 
 ## 4. Data flow (Phase 1)
 

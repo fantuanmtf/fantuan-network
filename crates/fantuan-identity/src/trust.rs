@@ -3,16 +3,64 @@
 //! SQLite schema:
 //!
 //! ```sql
-//! peer(fingerprint PK, uid, public_key_hex, trust_score, first_seen, last_seen)
-//! relationship(signer, subject, level, updated_at, PK(signer, subject))
+//! peer(fingerprint PK, uid, public_key_hex, descriptor, descriptor_sig,
+//!      trust_score, first_seen, last_seen)
+//! relationship(signer, subject, level, updated_at, signature,
+//!              PK(signer, subject))
 //! ```
 //!
-//! Trust scoring and gossip land in Phase 2; this module owns the durable
-//! shape of the graph and its invariants.
+//! Relationships are directed trust vouches; the signature column stores the
+//! OpenPGP detached signature made by the signer so the vouch can be relayed
+//! in gossip without re-signing. Scoring lives in [`crate::trust_graph`].
 
 use crate::error::{IdentityError, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Trust level on the same scale as OpenPGP's own model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum TrustLevel {
+    /// Explicitly distrusted.
+    Never = -1,
+    /// No usable path from our own key.
+    Unknown = 0,
+    /// Trusted to introduce others, weakly.
+    Marginal = 1,
+    /// Fully trusted introducer.
+    Full = 2,
+    /// Our own key or an explicit override.
+    Ultimate = 3,
+}
+
+impl TrustLevel {
+    /// Convert from an integer level (out-of-range values become Unknown).
+    pub fn from_i32(value: i32) -> Self {
+        match value {
+            -1 => TrustLevel::Never,
+            0 => TrustLevel::Unknown,
+            1 => TrustLevel::Marginal,
+            2 => TrustLevel::Full,
+            3 => TrustLevel::Ultimate,
+            _ => TrustLevel::Unknown,
+        }
+    }
+
+    /// Integer value.
+    pub fn to_i32(self) -> i32 {
+        self as i32
+    }
+
+    /// Map to a cached score in `0.0..=1.0`.
+    pub fn to_score(self) -> f64 {
+        match self {
+            TrustLevel::Never | TrustLevel::Unknown => 0.0,
+            TrustLevel::Marginal => 0.4,
+            TrustLevel::Full => 0.8,
+            TrustLevel::Ultimate => 1.0,
+        }
+    }
+}
 
 /// One known peer.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,7 +90,12 @@ pub struct Relationship {
     pub level: u8,
     /// Unix seconds of the last update.
     pub updated_at: u64,
+    /// Detached OpenPGP signature over the vouch payload.
+    pub signature: Vec<u8>,
 }
+
+/// A stored descriptor: fingerprint, canonical CBOR and detached signature.
+pub type StoredDescriptor = (String, Vec<u8>, Vec<u8>);
 
 /// Trust graph storage backed by SQLite.
 pub struct TrustStore {
@@ -75,6 +128,8 @@ impl TrustStore {
                      fingerprint     TEXT PRIMARY KEY,
                      uid             TEXT NOT NULL DEFAULT '',
                      public_key_hex  TEXT NOT NULL DEFAULT '',
+                     descriptor      BLOB,
+                     descriptor_sig  BLOB,
                      trust_score     REAL NOT NULL DEFAULT 0.0,
                      first_seen      INTEGER NOT NULL,
                      last_seen       INTEGER NOT NULL
@@ -84,10 +139,35 @@ impl TrustStore {
                      subject      TEXT NOT NULL,
                      level        INTEGER NOT NULL,
                      updated_at   INTEGER NOT NULL,
+                     signature    BLOB NOT NULL DEFAULT x'',
                      PRIMARY KEY (signer, subject)
                  );",
             )
-            .map_err(trust_err)
+            .map_err(trust_err)?;
+
+        // Migrate databases created before Phase 2.
+        self.ensure_column("peer", "descriptor", "BLOB")?;
+        self.ensure_column("peer", "descriptor_sig", "BLOB")?;
+        self.ensure_column("relationship", "signature", "BLOB NOT NULL DEFAULT x''")?;
+        Ok(())
+    }
+
+    fn ensure_column(&self, table: &str, column: &str, declaration: &str) -> Result<()> {
+        let exists: bool = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM pragma_table_info(?1) WHERE name = ?2 LIMIT 1",
+                params![table, column],
+                |_| Ok(true),
+            )
+            .optional()
+            .map_err(trust_err)?
+            .unwrap_or(false);
+        if !exists {
+            let sql = format!("ALTER TABLE {table} ADD COLUMN {column} {declaration}");
+            self.conn.execute(&sql, []).map_err(trust_err)?;
+        }
+        Ok(())
     }
 
     /// Insert or refresh a peer. `first_seen` is preserved on conflict.
@@ -136,8 +216,100 @@ impl TrustStore {
             .map_err(trust_err)
     }
 
+    /// List peers ordered by fingerprint.
+    pub fn peers(&self, limit: usize) -> Result<Vec<PeerRecord>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT fingerprint, uid, public_key_hex, trust_score,
+                        first_seen, last_seen
+                 FROM peer ORDER BY fingerprint LIMIT ?1",
+            )
+            .map_err(trust_err)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok(PeerRecord {
+                    fingerprint: row.get(0)?,
+                    uid: row.get(1)?,
+                    public_key_hex: row.get(2)?,
+                    trust_score: row.get(3)?,
+                    first_seen: row.get::<_, i64>(4)? as u64,
+                    last_seen: row.get::<_, i64>(5)? as u64,
+                })
+            })
+            .map_err(trust_err)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(trust_err)
+    }
+
+    /// Store a peer's self-signed descriptor for gossip.
+    pub fn store_descriptor(
+        &self,
+        fingerprint: &str,
+        descriptor: &[u8],
+        signature: &[u8],
+    ) -> Result<()> {
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE peer SET descriptor = ?2, descriptor_sig = ?3
+                 WHERE fingerprint = ?1",
+                params![fingerprint, descriptor, signature],
+            )
+            .map_err(trust_err)?;
+        if updated == 0 {
+            return Err(IdentityError::Trust(format!(
+                "cannot store descriptor for unknown peer {fingerprint}"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Fetch a stored descriptor and its signature.
+    pub fn descriptor_of(&self, fingerprint: &str) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+        self.conn
+            .query_row(
+                "SELECT descriptor, descriptor_sig FROM peer
+                 WHERE fingerprint = ?1 AND descriptor IS NOT NULL",
+                params![fingerprint],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()
+            .map_err(trust_err)
+    }
+
+    /// All stored descriptors `(fingerprint, descriptor, signature)`.
+    pub fn descriptors(&self, limit: usize) -> Result<Vec<StoredDescriptor>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT fingerprint, descriptor, descriptor_sig FROM peer
+                 WHERE descriptor IS NOT NULL
+                 ORDER BY fingerprint LIMIT ?1",
+            )
+            .map_err(trust_err)?;
+        let rows = stmt
+            .query_map(params![limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Vec<u8>>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                ))
+            })
+            .map_err(trust_err)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(trust_err)
+    }
+
     /// Store a directed trust relationship (last write wins).
-    pub fn set_relationship(&self, signer: &str, subject: &str, level: u8, now: u64) -> Result<()> {
+    pub fn set_relationship(
+        &self,
+        signer: &str,
+        subject: &str,
+        level: u8,
+        updated_at: u64,
+        signature: &[u8],
+    ) -> Result<()> {
         if level > 3 {
             return Err(IdentityError::Trust(format!(
                 "trust level {level} out of range 0..=3"
@@ -145,12 +317,14 @@ impl TrustStore {
         }
         self.conn
             .execute(
-                "INSERT INTO relationship (signer, subject, level, updated_at)
-                 VALUES (?1, ?2, ?3, ?4)
+                "INSERT INTO relationship
+                     (signer, subject, level, updated_at, signature)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
                  ON CONFLICT(signer, subject) DO UPDATE SET
                      level = excluded.level,
-                     updated_at = excluded.updated_at",
-                params![signer, subject, level, now as i64],
+                     updated_at = excluded.updated_at,
+                     signature = excluded.signature",
+                params![signer, subject, level, updated_at as i64, signature],
             )
             .map_err(trust_err)?;
         Ok(())
@@ -160,40 +334,26 @@ impl TrustStore {
     pub fn relationship(&self, signer: &str, subject: &str) -> Result<Option<Relationship>> {
         self.conn
             .query_row(
-                "SELECT signer, subject, level, updated_at
+                "SELECT signer, subject, level, updated_at, signature
                  FROM relationship WHERE signer = ?1 AND subject = ?2",
                 params![signer, subject],
-                |row| {
-                    Ok(Relationship {
-                        signer: row.get(0)?,
-                        subject: row.get(1)?,
-                        level: row.get(2)?,
-                        updated_at: row.get::<_, i64>(3)? as u64,
-                    })
-                },
+                relationship_from_row,
             )
             .optional()
             .map_err(trust_err)
     }
 
-    /// All incoming relationships for a subject.
-    pub fn relationships_for(&self, subject: &str) -> Result<Vec<Relationship>> {
+    /// All relationships, ordered for deterministic scoring.
+    pub fn relationships(&self) -> Result<Vec<Relationship>> {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT signer, subject, level, updated_at
-                 FROM relationship WHERE subject = ?1 ORDER BY signer",
+                "SELECT signer, subject, level, updated_at, signature
+                 FROM relationship ORDER BY signer, subject",
             )
             .map_err(trust_err)?;
         let rows = stmt
-            .query_map(params![subject], |row| {
-                Ok(Relationship {
-                    signer: row.get(0)?,
-                    subject: row.get(1)?,
-                    level: row.get(2)?,
-                    updated_at: row.get::<_, i64>(3)? as u64,
-                })
-            })
+            .query_map([], relationship_from_row)
             .map_err(trust_err)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(trust_err)
@@ -224,6 +384,16 @@ impl TrustStore {
     }
 }
 
+fn relationship_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Relationship> {
+    Ok(Relationship {
+        signer: row.get(0)?,
+        subject: row.get(1)?,
+        level: row.get(2)?,
+        updated_at: row.get::<_, i64>(3)? as u64,
+        signature: row.get(4)?,
+    })
+}
+
 fn trust_err(e: rusqlite::Error) -> IdentityError {
     IdentityError::Trust(e.to_string())
 }
@@ -252,23 +422,43 @@ mod tests {
     #[test]
     fn relationships_are_directed_and_ordered() {
         let store = TrustStore::in_memory().expect("store");
-        store.set_relationship("ALICE", "BOB", 2, 10).expect("rel");
-        store.set_relationship("CAROL", "BOB", 1, 11).expect("rel");
+        store
+            .set_relationship("ALICE", "BOB", 2, 10, b"sig-a")
+            .expect("rel");
+        store
+            .set_relationship("CAROL", "BOB", 1, 11, b"sig-c")
+            .expect("rel");
 
         let rel = store
             .relationship("ALICE", "BOB")
             .unwrap()
             .expect("present");
         assert_eq!(rel.level, 2);
+        assert_eq!(rel.signature, b"sig-a");
         assert!(
             store.relationship("BOB", "ALICE").unwrap().is_none(),
             "relationships must be directed"
         );
 
-        let incoming = store.relationships_for("BOB").unwrap();
-        assert_eq!(incoming.len(), 2);
-        assert_eq!(incoming[0].signer, "ALICE");
-        assert_eq!(incoming[1].signer, "CAROL");
+        let all = store.relationships().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].signer, "ALICE");
+        assert_eq!(all[1].signer, "CAROL");
+    }
+
+    #[test]
+    fn descriptors_roundtrip_and_require_known_peer() {
+        let store = TrustStore::in_memory().expect("store");
+        store.upsert_peer("FP1", "alice", "aa", 1).expect("insert");
+        store
+            .store_descriptor("FP1", b"descriptor", b"signature")
+            .expect("store");
+        let (descriptor, signature) = store.descriptor_of("FP1").unwrap().unwrap();
+        assert_eq!(descriptor, b"descriptor");
+        assert_eq!(signature, b"signature");
+        assert_eq!(store.descriptors(10).unwrap().len(), 1);
+
+        assert!(store.store_descriptor("FP2", b"x", b"y").is_err());
     }
 
     #[test]
@@ -284,7 +474,7 @@ mod tests {
     #[test]
     fn rejects_out_of_range_trust_level() {
         let store = TrustStore::in_memory().expect("store");
-        assert!(store.set_relationship("A", "B", 4, 1).is_err());
+        assert!(store.set_relationship("A", "B", 4, 1, b"").is_err());
     }
 
     #[test]
@@ -294,8 +484,22 @@ mod tests {
         {
             let store = TrustStore::open(&path).expect("open");
             store.upsert_peer("FP1", "alice", "aa", 42).expect("insert");
+            store
+                .store_descriptor("FP1", b"desc", b"sig")
+                .expect("descriptor");
         }
         let store = TrustStore::open(&path).expect("reopen");
         assert_eq!(store.peer_count().unwrap(), 1);
+        assert!(store.descriptor_of("FP1").unwrap().is_some());
+    }
+
+    #[test]
+    fn trust_level_ordering_and_scores() {
+        assert!(TrustLevel::Ultimate > TrustLevel::Full);
+        assert!(TrustLevel::Full > TrustLevel::Marginal);
+        assert!(TrustLevel::Marginal > TrustLevel::Unknown);
+        assert!(TrustLevel::Unknown > TrustLevel::Never);
+        assert_eq!(TrustLevel::from_i32(-1), TrustLevel::Never);
+        assert_eq!(TrustLevel::Full.to_score(), 0.8);
     }
 }
