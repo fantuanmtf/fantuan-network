@@ -1,0 +1,28 @@
+[package]
+name = "fantuan-node"
+description = "Fantuan Network node daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fantuan-node"
+path = "src/main.rs"
+
+[dependencies]
+fantuan-core.workspace = true
+fantuan-identity.workspace = true
+fantuan-msg.workspace = true
+fantuan-transport.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+toml.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,26 @@
+[package]
+name = "fantuan-transport"
+description = "I2P SAM v3 sessions, Noise handshakes and connection pool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fantuan-core.workspace = true
+tokio.workspace = true
+snow.workspace = true
+yosemite.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zeroize.workspace = true
+getrandom.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[features]
+# Enables integration tests that talk to a real local i2pd SAM bridge.
+i2p-integration = []

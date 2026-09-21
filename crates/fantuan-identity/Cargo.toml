@@ -1,0 +1,21 @@
+[package]
+name = "fantuan-identity"
+description = "OpenPGP key hierarchy, descriptors and trust graph"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fantuan-core.workspace = true
+sequoia-openpgp.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+hex.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

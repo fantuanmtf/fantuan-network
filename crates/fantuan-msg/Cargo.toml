@@ -1,0 +1,21 @@
+[package]
+name = "fantuan-msg"
+description = "CBOR object envelope, message signing and verification"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fantuan-core.workspace = true
+fantuan-identity.workspace = true
+serde.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+sequoia-openpgp.workspace = true
+hex.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
