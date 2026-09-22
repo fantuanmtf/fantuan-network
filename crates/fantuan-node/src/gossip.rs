@@ -103,6 +103,19 @@ pub fn handle(state: &Arc<NodeState>, via: &str, gossip: &Gossip) -> Result<usiz
                 );
                 continue;
             }
+            // Optional Sybil guard: third-party descriptors must be vouched
+            // for by the peer forwarding them.
+            if state.config.require_vouch_for_gossip
+                && descriptor.fingerprint != via
+                && store.relationship(via, &descriptor.fingerprint)?.is_none()
+            {
+                tracing::debug!(
+                    %via,
+                    subject = %descriptor.fingerprint,
+                    "gossip: no vouch for third-party descriptor; rejected"
+                );
+                continue;
+            }
             // Only genuinely new descriptors count as "accepted"; otherwise
             // two peers would echo gossip at each other forever.
             let already_known = store.descriptor_of(&descriptor.fingerprint)?.is_some();
@@ -156,4 +169,73 @@ pub fn handle(state: &Arc<NodeState>, via: &str, gossip: &Gossip) -> Result<usiz
         state.record_route(&fingerprint, &hop);
     }
     Ok(accepted)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::MessageStore;
+    use fantuan_core::config::NodeConfig;
+    use fantuan_identity::{Identity, TrustStore};
+    use tokio::sync::mpsc;
+
+    fn state(require_vouch: bool) -> Arc<NodeState> {
+        let identity = Arc::new(Identity::generate("bob", "dest-bob").expect("identity"));
+        let trust = TrustStore::in_memory().expect("trust");
+        let messages = MessageStore::in_memory().expect("messages");
+        let chunks = fantuan_storage::ChunkCache::in_memory(1 << 20).expect("chunks");
+        let (events, _rx) = mpsc::unbounded_channel();
+        let config = NodeConfig {
+            require_vouch_for_gossip: require_vouch,
+            ..NodeConfig::default()
+        };
+        NodeState::new(identity, config, trust, messages, chunks, events)
+    }
+
+    fn announcement(identity: &Identity) -> Gossip {
+        let mut gossip = Gossip::new();
+        gossip.push_announcement(
+            identity.descriptor().canonical_bytes().expect("descriptor"),
+            identity.descriptor_signature().to_vec(),
+        );
+        gossip
+    }
+
+    #[test]
+    fn third_party_descriptor_requires_a_vouch_when_configured() {
+        let state = state(true);
+        let carol = Identity::generate("carol", "dest-carol").expect("identity");
+        let gossip = announcement(&carol);
+
+        // Unknown forwarder without a vouch: rejected.
+        assert_eq!(handle(&state, "FP-VIA", &gossip).expect("handle"), 0);
+
+        // With a vouch from the forwarder, the descriptor is accepted.
+        {
+            let store = state.trust.lock().expect("trust");
+            store
+                .set_relationship("FP-VIA", &carol.fingerprint_hex(), 1, 1, b"sig")
+                .expect("vouch");
+        }
+        assert_eq!(handle(&state, "FP-VIA", &gossip).expect("handle"), 1);
+    }
+
+    #[test]
+    fn direct_descriptor_needs_no_vouch() {
+        let state = state(true);
+        let carol = Identity::generate("carol", "dest-carol").expect("identity");
+        let gossip = announcement(&carol);
+        assert_eq!(
+            handle(&state, &carol.fingerprint_hex(), &gossip).expect("handle"),
+            1
+        );
+    }
+
+    #[test]
+    fn vouch_requirement_is_off_by_default() {
+        let state = state(false);
+        let carol = Identity::generate("carol", "dest-carol").expect("identity");
+        let gossip = announcement(&carol);
+        assert_eq!(handle(&state, "FP-VIA", &gossip).expect("handle"), 1);
+    }
 }

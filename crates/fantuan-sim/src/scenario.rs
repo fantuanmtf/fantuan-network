@@ -23,6 +23,9 @@ pub const CALIBRATION_TIMED: &str = "calibration-timed";
 pub const DCNET_MESH: &str = "dcnet-mesh";
 /// DC-Net mesh with additional cover traffic.
 pub const DCNET_COVER: &str = "dcnet-cover";
+/// Selective participation where one sender joins every round and the others
+/// miss rounds, so an intersection attack can isolate the constant sender.
+pub const ATTACK_SELECTIVE: &str = "attack-selective";
 
 /// Discrete-event simulation state.
 pub struct Simulation {
@@ -74,6 +77,7 @@ pub fn run(name: &str, seed: u64) -> Result<Transcript> {
         CALIBRATION_TIMED => Ok(calibration_timed(seed)),
         DCNET_MESH => Ok(dcnet_mesh(seed, false)),
         DCNET_COVER => Ok(dcnet_mesh(seed, true)),
+        ATTACK_SELECTIVE => Ok(attack_selective(seed)),
         other => Err(SimError::UnknownScenario(other.to_string())),
     }
 }
@@ -211,6 +215,49 @@ fn dcnet_mesh(seed: u64, cover: bool) -> Transcript {
                     round_id: None,
                     participants: Vec::new(),
                     cover: true,
+                },
+            );
+        }
+    }
+    simulation.run()
+}
+
+/// Selective participation: `alice` sends in every round, `bob`, `carol` and
+/// `dave` each skip one early round, so intersecting the per-round candidate
+/// sets collapses to `alice`.
+fn attack_selective(seed: u64) -> Transcript {
+    let senders = vec![
+        "alice".to_string(),
+        "bob".to_string(),
+        "carol".to_string(),
+        "dave".to_string(),
+    ];
+    let duration_ms = 20_000;
+    let mut simulation = Simulation::new(ATTACK_SELECTIVE, seed, senders.clone(), duration_ms);
+
+    for round in 0..20u64 {
+        let present: Vec<String> = senders
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                !((*index == 1 && round == 0)
+                    || (*index == 2 && round == 1)
+                    || (*index == 3 && round == 2))
+            })
+            .map(|(_, sender)| sender.clone())
+            .collect();
+        for sender in &present {
+            let at_ms = round * 1000 + simulation.rng.below(10);
+            simulation.schedule(
+                at_ms,
+                Observation {
+                    at_ms,
+                    sender: sender.clone(),
+                    receiver: "broadcast".to_string(),
+                    size_bytes: 256,
+                    round_id: Some(round),
+                    participants: present.clone(),
+                    cover: false,
                 },
             );
         }

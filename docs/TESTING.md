@@ -31,7 +31,15 @@ The simulator produces JSON transcripts; the Python analyzer computes:
 
 Attack models covered: global passive adversary, partial adversarial nodes,
 timing correlation, intersection attack, n−1 attack, round-participation
-linkage.
+linkage. The full matrix and results live in [`ATTACKS.md`](ATTACKS.md).
+
+Run the attack suite:
+
+```bash
+cargo test -p fantuan-sim -p fantuan-anon    # unit + attack assertions
+bash scripts/run-anon-analysis.sh dcnet-mesh 11
+bash scripts/run-anon-analysis.sh attack-selective 2
+```
 
 ## 4. Conventions
 

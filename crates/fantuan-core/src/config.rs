@@ -51,6 +51,12 @@ pub struct NodeConfig {
     pub round_interval_secs: u64,
     /// Seconds between cover-traffic bursts.
     pub cover_interval_secs: u64,
+    /// Minimum trust level (0..=3) required to join DC-Net rounds.
+    pub min_round_trust: u8,
+    /// Maximum inbound frames per second per connection.
+    pub max_frames_per_sec: u32,
+    /// Require a vouch from the forwarding peer for third-party descriptors.
+    pub require_vouch_for_gossip: bool,
 }
 
 impl Default for NodeConfig {
@@ -71,6 +77,9 @@ impl Default for NodeConfig {
             traffic_shaping: true,
             round_interval_secs: 5,
             cover_interval_secs: 10,
+            min_round_trust: 0,
+            max_frames_per_sec: 500,
+            require_vouch_for_gossip: false,
         }
     }
 }

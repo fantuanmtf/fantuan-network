@@ -9,6 +9,7 @@ use crate::peer::BoundPeer;
 use crate::state::{NodeEvent, NodeState};
 use anyhow::{Result, anyhow};
 use fantuan_msg::{HistoryRequest, Object};
+use fantuan_traffic::RateLimiter;
 use fantuan_transport::DEFAULT_WRITER_QUEUE;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let idle = Duration::from_secs(state.config.idle_timeout_secs);
+    let mut limiter = RateLimiter::new(state.config.max_frames_per_sec);
     let (handle, mut outbound) = state
         .pool
         .register(peer.fingerprint(), DEFAULT_WRITER_QUEUE)?;
@@ -61,20 +63,31 @@ where
     let result = loop {
         tokio::select! {
             incoming = tokio::time::timeout(idle, peer.session.recv(&mut stream)) => match incoming {
-                Ok(Ok(bytes)) => match fantuan_traffic::parse(&bytes) {
-                    fantuan_traffic::Frame::Data(payload)
-                    | fantuan_traffic::Frame::Raw(payload) => {
-                        if let Err(error) = handle_object(&state, &mut peer, &mut stream, payload).await {
-                            break Err(error);
+                Ok(Ok(bytes)) => {
+                    // Per-connection DoS bound: over-limit frames are dropped
+                    // but the connection is kept.
+                    if !limiter.check() {
+                        tracing::debug!(
+                            peer = peer.descriptor.uid,
+                            "inbound frame dropped by rate limit"
+                        );
+                        continue;
+                    }
+                    match fantuan_traffic::parse(&bytes) {
+                        fantuan_traffic::Frame::Data(payload)
+                        | fantuan_traffic::Frame::Raw(payload) => {
+                            if let Err(error) = handle_object(&state, &mut peer, &mut stream, payload).await {
+                                break Err(error);
+                            }
+                        }
+                        fantuan_traffic::Frame::Cover => {
+                            tracing::trace!("cover frame discarded");
+                        }
+                        fantuan_traffic::Frame::Invalid => {
+                            tracing::debug!("invalid shaped frame dropped");
                         }
                     }
-                    fantuan_traffic::Frame::Cover => {
-                        tracing::trace!("cover frame discarded");
-                    }
-                    fantuan_traffic::Frame::Invalid => {
-                        tracing::debug!("invalid shaped frame dropped");
-                    }
-                },
+                }
                 Ok(Err(error)) => break Err(error.into()),
                 Err(_) => break Err(anyhow!("peer idle timeout")),
             },

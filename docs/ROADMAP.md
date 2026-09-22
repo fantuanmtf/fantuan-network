@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 5 complete.
+Status: Phase 6 complete (v0.1.0).
 
 ## 1. Strategy
 
@@ -126,11 +126,34 @@ Note: a full mixnet (fixed-size cells, layered routing, per-hop delays) is
 deferred to Phase 6 hardening; Phase 5 ships mix-lite batching plus cover
 traffic.
 
-### Phase 6 — Attack hardening and documentation
-Full attack matrix (GPA, partial, timing, intersection, n−1, participation
-linkage), Sybil and DoS hardening, complete English documentation.
+### Phase 6 — Attack hardening and documentation (done)
+1. Attack matrix: GPA entropy/top-1, timing correlation, intersection and
+   participation linkage in `fantuan-sim::attacks` plus the Python analyzer;
+   N−1/N−k collusion with real share algebra in `fantuan-anon`.
+2. Sybil hardening: `require_vouch_for_gossip` gates third-party descriptors,
+   `min_round_trust` filters round participants, relay quotas stay keyed by
+   verified identity.
+3. DoS hardening: per-connection token bucket, collector cap, bounded queues
+   and tables, chunk request dedup, freshness windows.
+4. Documentation: `docs/ATTACKS.md`, `docs/SECURITY_REPORT.md`, updated
+   protocol, security, architecture and testing guides.
 
-Exit: attack suite, English security report, complete docs.
+Exit met: attack suite (Rust + Python), English security report, and complete
+documentation. Evidence: `crates/fantuan-sim/src/attacks.rs`,
+`crates/fantuan-anon/src/share.rs` collusion tests,
+`reports/anonymity-dcnet-mesh-11.md` (all gates PASS),
+`docs/SECURITY_REPORT.md`.
+
+## Future work
+
+| Priority | Item |
+|----------|------|
+| High | Full mixnet with layered routing and per-hop delays |
+| High | Third-party security audit of session/round/relay paths |
+| Medium | Vouch expiry/revocation and per-peer behavior scoring |
+| Medium | Forward-secret ratcheting for direct sessions and manifests |
+| Medium | Long-run simulation campaigns (many seeds, larger N) |
+| Low | Erasure-coded file replication with repair |
 
 ## 4. Verification gates
 

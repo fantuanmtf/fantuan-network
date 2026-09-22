@@ -48,6 +48,28 @@ reference-only. No code is merged from it without re-derivation and tests.
     frames, so message length and exact send timing are not observable at the
     frame layer.
 
+## 2.1 Sybil resistance
+
+- Identities are free to create, so trust — not identity existence — decides
+  influence.
+- Gossip accepts third-party descriptors only when
+  `require_vouch_for_gossip = true` and the forwarding peer has a stored
+  vouch for the subject.
+- DC-Net participants can be restricted with `min_round_trust` (0 = open,
+  1 = Marginal+, 2 = Full+); evicted peers are excluded from selection.
+- Relay quotas are keyed by the verified identity key, so many claimed uids
+  behind one key share a single quota.
+
+## 2.2 DoS resistance
+
+- Per-connection token bucket (`max_frames_per_sec`, default 500); over-limit
+  frames are dropped while the connection stays up.
+- Bounded connections (256), writer queues (64), inbound queue (1024), relay
+  tables (4096, coarse eviction), chunk cache (byte budget), round collectors
+  (16) and gossip lists (64/256).
+- Freshness windows and monotonic nonces reject replay floods; chunk requests
+  carry a hop limit and a per-(hash, requester) dedup table.
+
 ## 3. Key handling
 
 - Node identity lives in `~/.fantuan/identity/`:

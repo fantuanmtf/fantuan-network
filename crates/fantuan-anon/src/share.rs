@@ -289,4 +289,159 @@ mod tests {
         assert!(!verify_share(&cert, "#g", 3, &[8u8; 64], &signature));
         assert!(!verify_share(&cert, "#g", 3, &share, &[0u8; 4]));
     }
+
+    /// Attack: with N-1 colluders the remaining sender can be attributed.
+    ///
+    /// The message itself is public to anyone who sees every share (that is
+    /// DC-Net extraction); what colluders gain is the ability to recompute
+    /// the non-colluder's share and thereby prove that the message came from
+    /// that share.
+    #[test]
+    fn colluding_majority_can_attribute_the_sender() {
+        let victim = participant("victim");
+        let c1 = participant("colluder1");
+        let c2 = participant("colluder2");
+        let c3 = participant("colluder3");
+        let participants = vec![
+            victim.uid.clone(),
+            c1.uid.clone(),
+            c2.uid.clone(),
+            c3.uid.clone(),
+        ];
+        let message = b"anonymous but not unlinkable from a majority";
+        let payload_len = 256;
+        let round_id = 9;
+
+        let victim_share = compute_xor_share(
+            &victim.secret,
+            &victim.uid,
+            &participants,
+            &keymap(&[&c1, &c2, &c3]),
+            Some(message),
+            payload_len,
+            round_id,
+        )
+        .expect("victim share");
+        let colluder_shares: Vec<Vec<u8>> = [&c1, &c2, &c3]
+            .iter()
+            .map(|colluder| {
+                let others: Vec<&Pair> = [&victim, &c1, &c2, &c3]
+                    .into_iter()
+                    .filter(|pair| pair.uid != colluder.uid)
+                    .collect();
+                compute_xor_share(
+                    &colluder.secret,
+                    &colluder.uid,
+                    &participants,
+                    &keymap(&others),
+                    None,
+                    payload_len,
+                    round_id,
+                )
+                .expect("colluder share")
+            })
+            .collect();
+
+        // Public extraction: XOR every observed share.
+        let mut observed = vec![victim_share.clone()];
+        observed.extend(colluder_shares.iter().cloned());
+        let padded_message = xor_all(&observed, payload_len);
+        assert_eq!(
+            unpad_message(&padded_message).as_deref(),
+            Some(&message[..])
+        );
+
+        // Colluders know every pairwise block the victim has (they are its
+        // only counterparts), so they can recompute the victim's share and
+        // compare it with the observed one.
+        let mut recomputed = padded_message.clone();
+        for colluder in [&c1, &c2, &c3] {
+            let block = derive_pair_share(
+                &colluder.secret,
+                &victim.public,
+                round_id,
+                &colluder.uid,
+                &victim.uid,
+                payload_len,
+            )
+            .expect("pair block");
+            xor_in_place(&mut recomputed, &block);
+        }
+        assert_eq!(
+            recomputed, victim_share,
+            "a colluding majority reproduces the sender's share"
+        );
+    }
+
+    /// Attack: a minority of colluders cannot attribute the sender because
+    /// unknown pairwise blocks remain in the recomputation.
+    #[test]
+    fn colluding_minority_cannot_attribute_the_sender() {
+        let victim = participant("victim");
+        let c1 = participant("colluder1");
+        let c2 = participant("colluder2");
+        let bystander = participant("bystander");
+        let participants = vec![
+            victim.uid.clone(),
+            c1.uid.clone(),
+            c2.uid.clone(),
+            bystander.uid.clone(),
+        ];
+        let message = b"still unlinkable from a minority";
+        let payload_len = 256;
+        let round_id = 11;
+
+        let victim_share = compute_xor_share(
+            &victim.secret,
+            &victim.uid,
+            &participants,
+            &keymap(&[&c1, &c2, &bystander]),
+            Some(message),
+            payload_len,
+            round_id,
+        )
+        .expect("victim share");
+        let shares: Vec<Vec<u8>> = [&c1, &c2, &bystander]
+            .iter()
+            .map(|participant| {
+                let others: Vec<&Pair> = [&victim, &c1, &c2, &bystander]
+                    .into_iter()
+                    .filter(|pair| pair.uid != participant.uid)
+                    .collect();
+                compute_xor_share(
+                    &participant.secret,
+                    &participant.uid,
+                    &participants,
+                    &keymap(&others),
+                    None,
+                    payload_len,
+                    round_id,
+                )
+                .expect("share")
+            })
+            .collect();
+
+        let mut observed = vec![victim_share.clone()];
+        observed.extend(shares.iter().cloned());
+        let padded_message = xor_all(&observed, payload_len);
+
+        // The victim's block with the bystander is unknown to the colluders.
+        let mut recomputed = padded_message.clone();
+        for colluder in [&c1, &c2] {
+            let block = derive_pair_share(
+                &colluder.secret,
+                &victim.public,
+                round_id,
+                &colluder.uid,
+                &victim.uid,
+                payload_len,
+            )
+            .expect("pair block");
+            xor_in_place(&mut recomputed, &block);
+        }
+        assert_ne!(
+            recomputed, victim_share,
+            "a minority must not reproduce the sender's share"
+        );
+    }
 }

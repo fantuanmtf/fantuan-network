@@ -24,6 +24,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 pub const ROUND_DEADLINE_SECS: u64 = 15;
 /// Retries before a queued message is dropped.
 pub const MAX_CONFLICT_RETRIES: u32 = 3;
+/// Maximum concurrently collecting rounds (DoS bound).
+pub const MAX_COLLECTORS: usize = 16;
 
 /// Immutable context for driver calls.
 pub struct RoundContext<'a> {
@@ -280,6 +282,10 @@ impl RoundDriver {
 
     fn on_start(&mut self, start: &DcRoundStart, ctx: &RoundContext) -> RoundAction {
         if start.validate().is_err() {
+            return RoundAction::default();
+        }
+        if self.collectors.len() >= MAX_COLLECTORS {
+            tracing::warn!(round_id = start.round_id, "collector limit reached");
             return RoundAction::default();
         }
         if !self.tracker.mark_seen(start.round_id) {
@@ -625,5 +631,22 @@ mod tests {
         collector.submit_share("A", &[0u8; 256]).expect("own");
         assert_eq!(collector.missing_participants(), vec!["B".to_string()]);
         assert!(!collector.is_complete());
+    }
+
+    #[test]
+    fn collector_limit_bounds_round_flood() {
+        let alice = node("alice");
+        let bob = node("bob");
+        let (noise, certs) = maps(&[&alice, &bob]);
+        let ctx = context(&alice, &noise, &certs);
+        let participants = vec![alice.uid.clone(), bob.uid.clone()];
+
+        let mut driver = RoundDriver::new();
+        for round in 1..=(MAX_COLLECTORS as u64 + 2) {
+            let start =
+                DcRoundStart::new("#anon", round, &bob.uid, &participants, 15, 256).expect("start");
+            driver.handle(&Object::DcRoundStart(start), &ctx);
+        }
+        assert_eq!(driver.active_rounds(), MAX_COLLECTORS);
     }
 }

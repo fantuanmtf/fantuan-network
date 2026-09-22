@@ -7,7 +7,7 @@
 use crate::state::{NodeEvent, NodeState};
 use anyhow::{Result, anyhow, bail};
 use fantuan_anon::{RoundContext, RoundDriver};
-use fantuan_identity::Descriptor;
+use fantuan_identity::{Descriptor, TrustGraph, TrustLevel};
 use fantuan_msg::{DCNET_MAX_PARTICIPANTS, DCNET_PAYLOAD_LEN, Object};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,6 +35,24 @@ pub fn participants(state: &Arc<NodeState>) -> Vec<String> {
     {
         list.push(peer);
     }
+
+    // Optional Sybil guard: require a minimum trust level.
+    let min_trust = state.config.min_round_trust;
+    if min_trust > 0
+        && let Ok(store) = state.trust.lock()
+    {
+        let own = state.fingerprint();
+        let mut graph = TrustGraph::new(&store, &own);
+        let required = TrustLevel::from_i32(min_trust as i32);
+        list.retain(|peer| {
+            *peer == own
+                || graph
+                    .trust_of(peer)
+                    .map(|level| level >= required)
+                    .unwrap_or(false)
+        });
+    }
+
     list.sort();
     // Keep the local node in the list even after truncation.
     if list.len() > DCNET_MAX_PARTICIPANTS {

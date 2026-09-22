@@ -14,13 +14,14 @@ Transport (I2P Tunnel / Noise / Session Manager)
 Network Node (Peer Discovery / Routing / Relay)
 ```
 
-**Status:** Phase 5 complete — OpenPGP identity and descriptors, CBOR message
-envelope, I2P SAM v3 + Noise sessions with identity binding, signed trust
-graph, gossip discovery, end-to-end encrypted relay routing, channels and
-forums with offline history sync, content-addressed encrypted file storage
-with chunk replication, DC-Net anonymous rounds with padding/cover traffic,
-a TUI client, a local IRC bridge, and the offline simulation/analysis
-pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+**Status:** v0.1.0 — all six phases complete. OpenPGP identity and descriptors,
+CBOR message envelope, I2P SAM v3 + Noise sessions with identity binding,
+signed trust graph, gossip discovery, end-to-end encrypted relay routing,
+channels and forums with offline history sync, content-addressed encrypted
+file storage with chunk replication, DC-Net anonymous rounds with
+padding/cover traffic, a TUI client, a local IRC bridge, and the offline
+simulation/analysis pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and
+[`docs/SECURITY_REPORT.md`](docs/SECURITY_REPORT.md).
 
 ## Repository layout
 
@@ -34,7 +35,13 @@ pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 | `crates/fantuan-node` | `fantuan-node` binary |
 | `analysis/` | Python statistical analysis of simulation transcripts |
 | `docs/` | English project documentation |
-| `reports/` | English test and anonymity-analysis reports |
+| `reports/` | Generated English test and anonymity-analysis reports |
+
+Key documents: [ARCHITECTURE](docs/ARCHITECTURE.md) ·
+[PROTOCOL](docs/PROTOCOL.md) · [SECURITY](docs/SECURITY.md) ·
+[ATTACKS](docs/ATTACKS.md) · [SECURITY_REPORT](docs/SECURITY_REPORT.md) ·
+[TESTING](docs/TESTING.md) · [DEPENDENCIES](docs/DEPENDENCIES.md) ·
+[ROADMAP](docs/ROADMAP.md).
 
 ## Build and test
 

@@ -78,6 +78,7 @@ fn main() {
             println!("{}", fantuan_sim::CALIBRATION_TIMED);
             println!("{}", fantuan_sim::DCNET_MESH);
             println!("{}", fantuan_sim::DCNET_COVER);
+            println!("{}", fantuan_sim::ATTACK_SELECTIVE);
         }
     }
 }

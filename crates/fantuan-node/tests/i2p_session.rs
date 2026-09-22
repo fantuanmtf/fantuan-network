@@ -256,20 +256,22 @@ async fn three_nodes_relay_over_i2p() {
     wait_for_route(&alice_state, &carol_fp, "alice").await;
     wait_for_route(&carol_state, &alice_fp, "carol").await;
 
-    fantuan_node::relay::send_message(&alice_state, &carol_fp, "hello over i2p via bob")
-        .expect("send relay");
-
-    let event = tokio::time::timeout(Duration::from_secs(120), carol_events.recv())
-        .await
-        .expect("delivery timeout")
-        .expect("event channel");
-    match event {
-        NodeEvent::Message { from, text } => {
-            assert_eq!(from, alice_fp);
-            assert_eq!(text, "hello over i2p via bob");
+    // I2P tunnels can drop a relay attempt during warm-up; retry a few times.
+    let mut delivered: Option<(String, String)> = None;
+    for _ in 0..5 {
+        fantuan_node::relay::send_message(&alice_state, &carol_fp, "hello over i2p via bob")
+            .expect("send relay");
+        match tokio::time::timeout(Duration::from_secs(30), carol_events.recv()).await {
+            Ok(Some(NodeEvent::Message { from, text })) => {
+                delivered = Some((from, text));
+                break;
+            }
+            _ => continue,
         }
-        other => panic!("unexpected event: {other:?}"),
     }
+    let (from, text) = delivered.expect("delivery timeout after retries");
+    assert_eq!(from, alice_fp);
+    assert_eq!(text, "hello over i2p via bob");
 
     alice_task.abort();
     carol_task.abort();
