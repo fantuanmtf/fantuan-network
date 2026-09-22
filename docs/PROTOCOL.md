@@ -21,21 +21,52 @@ A descriptor is a canonical CBOR map with integer keys:
 
 | Key | Field | Type | Description |
 |-----|-------|------|-------------|
-| 1 | `version` | uint | descriptor format version (currently 1) |
+| 1 | `version` | uint | descriptor format version (currently 2) |
 | 2 | `uid` | text | human-readable node name |
-| 3 | `fingerprint` | text | uppercase hex OpenPGP fingerprint |
+| 3 | `fingerprint` | text | uppercase hex OpenPGP fingerprint (`cert_id`) |
 | 4 | `openpgp_cert` | bytes | public OpenPGP certificate |
 | 5 | `noise_x25519_pub` | bytes(32) | Noise static public key |
 | 6 | `i2p_destination` | text | base64 I2P destination |
 | 7 | `capabilities` | array of text | e.g. `chat`, `bbs`, `storage` |
 | 8 | `created` | uint | Unix seconds |
+| 9 | `proto_id` | bytes(32) | protocol identity (see below) |
+
+### Protocol identity (`proto_id`)
+
+`proto_id` is the identity the protocol uses: round namespaces, rosters, ACK
+fields, KDF inputs and wire objects. It is derived from the primary public key
+packet body only — never from the whole certificate:
+
+```
+proto_id = BLAKE3("fantuan-proto-id-v1" ‖ canonical_primary_public_key_packet_body)[0..32]
+```
+
+`canonical_primary_public_key_packet_body` is the primary key's OpenPGP
+public-key packet body (its version, creation time, algorithm and key
+material) without the packet tag/length header. Consequences, all required:
+
+- Adding a user id, adding or rotating a subkey, re-signing a self-signature
+  or extending an expiration MUST NOT change `proto_id`.
+- Replacing the primary key IS an identity change: it yields a different
+  `proto_id`, and the old identity is not migrated automatically.
+- Wire objects carry the raw 32 bytes; the hex form
+  (`fantuan-identity`'s `proto_id_hex`) is for display and diagnostics only
+  and MUST NOT be used as a key, a namespace or a lookup value.
+
+`fingerprint` remains the OpenPGP-level identifier (`cert_id`), used for
+certificate lookups and evidence; trust storage keeps both, and every lookup
+by `proto_id` is backed by a recomputation from the stored certificate.
 
 The descriptor bytes are signed by the OpenPGP signing subkey with a
 detached, binary signature. A descriptor MUST be rejected unless:
 
 1. it decodes canonically and all required fields are present;
 2. `fingerprint` matches the fingerprint of `openpgp_cert`;
-3. the signature verifies under a signing-capable key of that certificate.
+3. `proto_id` is exactly 32 bytes and equals the value recomputed from
+   `openpgp_cert` — a valid signature alone is not sufficient, because it
+   only proves the key signed the value, not that the value follows from the
+   key material;
+4. the signature verifies under a signing-capable key of that certificate.
 
 ## 3. Session handshake
 

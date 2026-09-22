@@ -8,6 +8,7 @@
 
 use crate::error::{IdentityError, Result};
 use crate::keys::{cert_from_bytes, fingerprint_of_cert_bytes, verify_detached};
+use crate::proto_id::{PROTO_ID_LEN, proto_id_from_cert_bytes};
 use ciborium::Value;
 
 /// Hard upper bound for an encoded descriptor (64 KiB).
@@ -33,13 +34,20 @@ pub struct Descriptor {
     pub i2p_destination: String,
     /// Advertised capabilities.
     pub capabilities: Vec<String>,
+    /// Protocol identity: 32 raw bytes derived from the primary public key
+    /// packet body. The self-signature covers this field, and every ingest
+    /// recomputes it from the embedded certificate.
+    pub proto_id: [u8; PROTO_ID_LEN],
     /// Creation time, Unix seconds.
     pub created: u64,
 }
 
 impl Descriptor {
     /// Current descriptor format version.
-    pub const VERSION: u16 = 1;
+    ///
+    /// Version 2 added the `proto_id` field (key 9); version 1 descriptors are
+    /// rejected rather than migrated.
+    pub const VERSION: u16 = 2;
 
     /// Encode the descriptor in canonical form.
     pub fn canonical_bytes(&self) -> Result<Vec<u8>> {
@@ -85,6 +93,10 @@ impl Descriptor {
                 Value::Integer(8.into()),
                 Value::Integer(self.created.into()),
             ),
+            (
+                Value::Integer(9.into()),
+                Value::Bytes(self.proto_id.to_vec()),
+            ),
         ];
 
         let encoded = encode_value(&Value::Map(fields))?;
@@ -128,6 +140,7 @@ impl Descriptor {
         let mut i2p_destination: Option<String> = None;
         let mut capabilities: Option<Vec<String>> = None;
         let mut created: Option<u64> = None;
+        let mut proto_id: Option<[u8; PROTO_ID_LEN]> = None;
         let mut last_key: i128 = 0;
 
         for (key, value) in fields {
@@ -175,6 +188,12 @@ impl Descriptor {
                     capabilities = Some(caps);
                 }
                 8 => created = Some(as_u64(&value, "created")?),
+                9 => {
+                    let raw = as_bytes(&value, "proto_id")?;
+                    proto_id = Some(raw.as_slice().try_into().map_err(|_| {
+                        IdentityError::Descriptor(format!("proto_id must be {PROTO_ID_LEN} bytes"))
+                    })?);
+                }
                 other => {
                     return Err(IdentityError::Descriptor(format!("unknown field {other}")));
                 }
@@ -197,6 +216,8 @@ impl Descriptor {
                 .ok_or_else(|| IdentityError::Descriptor("missing capabilities".to_string()))?,
             created: created
                 .ok_or_else(|| IdentityError::Descriptor("missing created".to_string()))?,
+            proto_id: proto_id
+                .ok_or_else(|| IdentityError::Descriptor("missing proto_id".to_string()))?,
         };
 
         if descriptor.version != Self::VERSION {
@@ -219,9 +240,26 @@ impl Descriptor {
         Ok(())
     }
 
+    /// Recompute the protocol identity from the embedded certificate and
+    /// compare it with the signed field.
+    ///
+    /// A valid self-signature is not sufficient on its own: it proves the key
+    /// signed the value, not that the value follows from the certificate. The
+    /// recomputation is what binds `proto_id` to the key material.
+    pub fn verify_proto_id(&self) -> Result<()> {
+        let expected = proto_id_from_cert_bytes(&self.openpgp_cert)?;
+        if expected != self.proto_id {
+            return Err(IdentityError::Verification(
+                "proto_id does not match the certificate".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Verify a detached signature over the canonical descriptor bytes.
     pub fn verify(&self, signature: &[u8]) -> Result<()> {
         self.verify_fingerprint()?;
+        self.verify_proto_id()?;
         let cert = cert_from_bytes(&self.openpgp_cert)?;
         verify_detached(&cert, &self.canonical_bytes()?, signature)
     }
@@ -330,5 +368,75 @@ mod tests {
         let (_identity, mut descriptor, signature) = sample();
         descriptor.fingerprint = "00".repeat(20);
         assert!(descriptor.verify(&signature).is_err());
+    }
+
+    /// T-ID-BINDING: `proto_id` must follow from the certificate, not merely
+    /// be signed. A tampered value that is re-signed with the same key is
+    /// still rejected, because the recomputation disagrees.
+    #[test]
+    fn id_binding_rejects_a_signed_but_wrong_proto_id() {
+        let (identity, mut descriptor, _sig) = sample();
+
+        // Round trip the honest value first.
+        descriptor
+            .verify_proto_id()
+            .expect("honest proto_id verifies");
+
+        descriptor.proto_id = [0x42u8; PROTO_ID_LEN];
+        let resigned = crate::keys::sign_with(
+            &identity.certificate(),
+            &descriptor.canonical_bytes().expect("encode"),
+        )
+        .expect("re-sign");
+        let error = descriptor
+            .verify(&resigned)
+            .expect_err("a valid signature over a wrong proto_id must still fail");
+        assert!(
+            format!("{error}").contains("proto_id"),
+            "rejection must be attributed to proto_id, got: {error}"
+        );
+        assert!(
+            descriptor.verify_proto_id().is_err(),
+            "the recomputation is what rejects it"
+        );
+    }
+
+    /// A descriptor without the `proto_id` field, or with a wrongly sized one,
+    /// must not decode.
+    #[test]
+    fn id_binding_requires_a_fixed_width_proto_id_field() {
+        let (_identity, descriptor, _sig) = sample();
+        let bytes = descriptor.canonical_bytes().expect("encode");
+        let value: Value = ciborium::from_reader(bytes.as_slice()).expect("decode");
+        let Value::Map(fields) = value else {
+            panic!("map expected");
+        };
+
+        let without: Vec<_> = fields
+            .iter()
+            .filter(|(key, _)| *key != Value::Integer(9.into()))
+            .cloned()
+            .collect();
+        let encoded = encode_value(&Value::Map(without)).expect("encode");
+        assert!(
+            Descriptor::from_canonical(&encoded).is_err(),
+            "a descriptor without proto_id must be rejected"
+        );
+
+        let short: Vec<_> = fields
+            .into_iter()
+            .map(|(key, value)| {
+                if key == Value::Integer(9.into()) {
+                    (key, Value::Bytes(vec![0u8; PROTO_ID_LEN - 1]))
+                } else {
+                    (key, value)
+                }
+            })
+            .collect();
+        let encoded = encode_value(&Value::Map(short)).expect("encode");
+        assert!(
+            Descriptor::from_canonical(&encoded).is_err(),
+            "a wrongly sized proto_id must be rejected"
+        );
     }
 }

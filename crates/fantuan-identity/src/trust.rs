@@ -14,6 +14,7 @@
 //! in gossip without re-signing. Scoring lives in [`crate::trust_graph`].
 
 use crate::error::{IdentityError, Result};
+use crate::proto_id::{PROTO_ID_LEN, proto_id_from_cert_bytes};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -77,6 +78,11 @@ pub struct PeerRecord {
     pub first_seen: u64,
     /// Unix seconds of last contact.
     pub last_seen: u64,
+    /// Protocol identity, recomputed from the stored certificate.
+    ///
+    /// `None` for rows written before the field existed, or when the stored
+    /// key material is not a parseable certificate.
+    pub proto_id: Option<[u8; PROTO_ID_LEN]>,
 }
 
 /// A directed trust relationship.
@@ -96,6 +102,32 @@ pub struct Relationship {
 
 /// A stored descriptor: fingerprint, canonical CBOR and detached signature.
 pub type StoredDescriptor = (String, Vec<u8>, Vec<u8>);
+
+/// Map a `peer` row to a [`PeerRecord`].
+fn map_peer_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PeerRecord> {
+    let proto_id: Option<Vec<u8>> = row.get(6)?;
+    Ok(PeerRecord {
+        fingerprint: row.get(0)?,
+        uid: row.get(1)?,
+        public_key_hex: row.get(2)?,
+        trust_score: row.get(3)?,
+        first_seen: row.get::<_, i64>(4)? as u64,
+        last_seen: row.get::<_, i64>(5)? as u64,
+        proto_id: proto_id.and_then(|raw| raw.as_slice().try_into().ok()),
+    })
+}
+
+/// Recompute the protocol identity of a hex-encoded certificate.
+///
+/// Returns `None` when the material is absent or is not a certificate; callers
+/// store `NULL` rather than a guessed value.
+fn proto_id_of_public_key_hex(public_key_hex: &str) -> Option<[u8; PROTO_ID_LEN]> {
+    if public_key_hex.is_empty() {
+        return None;
+    }
+    let bytes = hex::decode(public_key_hex).ok()?;
+    proto_id_from_cert_bytes(&bytes).ok()
+}
 
 /// Trust graph storage backed by SQLite.
 pub struct TrustStore {
@@ -132,7 +164,8 @@ impl TrustStore {
                      descriptor_sig  BLOB,
                      trust_score     REAL NOT NULL DEFAULT 0.0,
                      first_seen      INTEGER NOT NULL,
-                     last_seen       INTEGER NOT NULL
+                     last_seen       INTEGER NOT NULL,
+                     proto_id        BLOB
                  );
                  CREATE TABLE IF NOT EXISTS relationship (
                      signer       TEXT NOT NULL,
@@ -149,6 +182,9 @@ impl TrustStore {
         self.ensure_column("peer", "descriptor", "BLOB")?;
         self.ensure_column("peer", "descriptor_sig", "BLOB")?;
         self.ensure_column("relationship", "signature", "BLOB NOT NULL DEFAULT x''")?;
+        // Protocol identity column (Phase 8); rows written by earlier builds
+        // keep NULL until the peer is seen again.
+        self.ensure_column("peer", "proto_id", "BLOB")?;
         Ok(())
     }
 
@@ -171,6 +207,11 @@ impl TrustStore {
     }
 
     /// Insert or refresh a peer. `first_seen` is preserved on conflict.
+    ///
+    /// The protocol identity is recomputed from the supplied certificate, so
+    /// `proto_id` always follows from the key material rather than from a
+    /// claimed value. A later upsert without a certificate never clears a
+    /// known `proto_id`.
     pub fn upsert_peer(
         &self,
         fingerprint: &str,
@@ -178,19 +219,47 @@ impl TrustStore {
         public_key_hex: &str,
         now: u64,
     ) -> Result<()> {
+        let proto_id = proto_id_of_public_key_hex(public_key_hex);
         self.conn
             .execute(
                 "INSERT INTO peer (fingerprint, uid, public_key_hex, trust_score,
-                                   first_seen, last_seen)
-                 VALUES (?1, ?2, ?3, 0.0, ?4, ?4)
+                                   first_seen, last_seen, proto_id)
+                 VALUES (?1, ?2, ?3, 0.0, ?4, ?4, ?5)
                  ON CONFLICT(fingerprint) DO UPDATE SET
                      uid = excluded.uid,
                      public_key_hex = excluded.public_key_hex,
-                     last_seen = excluded.last_seen",
-                params![fingerprint, uid, public_key_hex, now as i64],
+                     last_seen = excluded.last_seen,
+                     proto_id = COALESCE(excluded.proto_id, peer.proto_id)",
+                params![
+                    fingerprint,
+                    uid,
+                    public_key_hex,
+                    now as i64,
+                    proto_id.map(|id| id.to_vec())
+                ],
             )
             .map_err(trust_err)?;
         Ok(())
+    }
+
+    /// Fetch a peer by protocol identity.
+    ///
+    /// `proto_id` is the namespace key the protocol uses; the fingerprint
+    /// (`cert_id`) remains the OpenPGP-level key.
+    pub fn get_peer_by_proto_id(
+        &self,
+        proto_id: &[u8; PROTO_ID_LEN],
+    ) -> Result<Option<PeerRecord>> {
+        self.conn
+            .query_row(
+                "SELECT fingerprint, uid, public_key_hex, trust_score,
+                        first_seen, last_seen, proto_id
+                 FROM peer WHERE proto_id = ?1",
+                params![proto_id.to_vec()],
+                map_peer_row,
+            )
+            .optional()
+            .map_err(trust_err)
     }
 
     /// Fetch a peer by fingerprint.
@@ -198,19 +267,10 @@ impl TrustStore {
         self.conn
             .query_row(
                 "SELECT fingerprint, uid, public_key_hex, trust_score,
-                        first_seen, last_seen
+                        first_seen, last_seen, proto_id
                  FROM peer WHERE fingerprint = ?1",
                 params![fingerprint],
-                |row| {
-                    Ok(PeerRecord {
-                        fingerprint: row.get(0)?,
-                        uid: row.get(1)?,
-                        public_key_hex: row.get(2)?,
-                        trust_score: row.get(3)?,
-                        first_seen: row.get::<_, i64>(4)? as u64,
-                        last_seen: row.get::<_, i64>(5)? as u64,
-                    })
-                },
+                map_peer_row,
             )
             .optional()
             .map_err(trust_err)
@@ -222,21 +282,12 @@ impl TrustStore {
             .conn
             .prepare(
                 "SELECT fingerprint, uid, public_key_hex, trust_score,
-                        first_seen, last_seen
+                        first_seen, last_seen, proto_id
                  FROM peer ORDER BY fingerprint LIMIT ?1",
             )
             .map_err(trust_err)?;
         let rows = stmt
-            .query_map(params![limit as i64], |row| {
-                Ok(PeerRecord {
-                    fingerprint: row.get(0)?,
-                    uid: row.get(1)?,
-                    public_key_hex: row.get(2)?,
-                    trust_score: row.get(3)?,
-                    first_seen: row.get::<_, i64>(4)? as u64,
-                    last_seen: row.get::<_, i64>(5)? as u64,
-                })
-            })
+            .query_map(params![limit as i64], map_peer_row)
             .map_err(trust_err)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(trust_err)
@@ -491,6 +542,57 @@ mod tests {
         let store = TrustStore::open(&path).expect("reopen");
         assert_eq!(store.peer_count().unwrap(), 1);
         assert!(store.descriptor_of("FP1").unwrap().is_some());
+    }
+
+    #[test]
+    fn proto_id_is_derived_from_the_stored_certificate() {
+        let alice = crate::keys::Identity::generate("alice", "dest-alice").expect("identity");
+        let fingerprint = alice.fingerprint_hex();
+        let hex_cert = hex::encode(alice.public_cert_bytes().expect("bytes"));
+        let store = TrustStore::in_memory().expect("store");
+        store
+            .upsert_peer(&fingerprint, "alice", &hex_cert, 1)
+            .expect("insert");
+
+        let peer = store.get_peer(&fingerprint).expect("get").expect("present");
+        assert_eq!(
+            peer.proto_id,
+            Some(alice.proto_id()),
+            "the stored protocol identity follows from the certificate"
+        );
+        let by_proto = store
+            .get_peer_by_proto_id(&alice.proto_id())
+            .expect("lookup")
+            .expect("found by proto_id");
+        assert_eq!(by_proto.fingerprint, fingerprint);
+    }
+
+    #[test]
+    fn proto_id_lookup_misses_unknown_identities_and_survives_garbage() {
+        let store = TrustStore::in_memory().expect("store");
+        // Not a certificate: the row is kept, but no protocol identity is
+        // invented for it.
+        store
+            .upsert_peer("FP1", "nobody", "aabb", 1)
+            .expect("insert");
+        let peer = store.get_peer("FP1").expect("get").expect("present");
+        assert_eq!(peer.proto_id, None);
+        assert!(
+            store
+                .get_peer_by_proto_id(&[0u8; PROTO_ID_LEN])
+                .expect("lookup")
+                .is_none()
+        );
+
+        // An upsert without usable key material must not clear a known value.
+        let alice = crate::keys::Identity::generate("alice", "dest-alice").expect("identity");
+        let hex_cert = hex::encode(alice.public_cert_bytes().expect("bytes"));
+        store
+            .upsert_peer("FP2", "alice", &hex_cert, 1)
+            .expect("insert");
+        store.upsert_peer("FP2", "alice", "", 2).expect("refresh");
+        let peer = store.get_peer("FP2").expect("get").expect("present");
+        assert_eq!(peer.proto_id, Some(alice.proto_id()));
     }
 
     #[test]

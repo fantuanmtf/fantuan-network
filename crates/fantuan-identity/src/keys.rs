@@ -15,6 +15,7 @@
 
 use crate::descriptor::Descriptor;
 use crate::error::{IdentityError, Result};
+use crate::proto_id::{PROTO_ID_LEN, proto_id_from_cert};
 use fantuan_core::{fs as secure_fs, time};
 use sequoia_openpgp::Cert;
 use sequoia_openpgp::cert::prelude::*;
@@ -77,6 +78,7 @@ impl Identity {
             version: Descriptor::VERSION,
             uid: uid.to_string(),
             fingerprint: fingerprint_of_cert_bytes(&cert_bytes)?,
+            proto_id: proto_id_from_cert(&cert)?,
             openpgp_cert: cert_bytes,
             noise_x25519_pub: noise_public,
             i2p_destination: i2p_destination.to_string(),
@@ -125,6 +127,12 @@ impl Identity {
                 "descriptor fingerprint does not match secret certificate".to_string(),
             ));
         }
+        let expected_proto_id = proto_id_from_cert(&cert)?;
+        if descriptor.proto_id != expected_proto_id {
+            return Err(IdentityError::Verification(
+                "descriptor proto_id does not match secret certificate".to_string(),
+            ));
+        }
         if descriptor.noise_x25519_pub != noise_public {
             return Err(IdentityError::Verification(
                 "descriptor noise key does not match stored noise secret".to_string(),
@@ -166,8 +174,18 @@ impl Identity {
     }
 
     /// OpenPGP fingerprint, uppercase hex.
+    ///
+    /// This is the *certificate* identifier (`cert_id`): it is used for
+    /// OpenPGP-level lookups and evidence. Protocol namespaces, rosters and
+    /// wire objects use [`Identity::proto_id`] instead.
     pub fn fingerprint_hex(&self) -> String {
         self.cert.fingerprint().to_hex().to_uppercase()
+    }
+
+    /// Protocol identity: 32 raw bytes derived from the primary public key
+    /// packet body (see [`crate::proto_id`]).
+    pub fn proto_id(&self) -> [u8; PROTO_ID_LEN] {
+        self.descriptor.proto_id
     }
 
     /// Public certificate bytes (for sharing).
