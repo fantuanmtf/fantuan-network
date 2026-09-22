@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 2 complete.
+Status: Phase 3 complete.
 
 ## 1. Strategy
 
@@ -70,11 +70,21 @@ message is relayed from A to C through B — proven both with an in-memory
 duplex test and over real I2P
 (`crates/fantuan-node/tests/relay_loopback.rs`, `tests/i2p_session.rs`).
 
-### Phase 3 — BBS/IRC and client
-Channels, forum posts, offline messages, TUI, local IRC bridge.
+### Phase 3 — BBS/IRC and client (done)
+1. Signed `ChannelMessage`, `ForumPost`, `HistoryRequest/Response` and
+   `DeleteRequest` objects with canonical CBOR, size caps and per-object id.
+2. SQLite message store with dedup, per-topic history queries and delete.
+3. Store-and-forward: subscribed objects are stored, emitted and flooded;
+   reconnecting peers request history since their newest stored timestamp.
+4. Local control socket (newline JSON + event stream) and a TUI client
+   (`fantuan`) that chats, posts and reads.
+5. Minimal IRC bridge mapping `JOIN`/`PRIVMSG` onto channels.
 
-Exit: two TUI clients chat, post and read; offline messages are delivered
-after reconnect.
+Exit met: two clients chat, post and read through one node (control API and
+IRC tests); messages and forum posts published while a node is offline are
+delivered through history sync on reconnect
+(`crates/fantuan-node/tests/control_api.rs`, `tests/irc_bridge.rs`,
+`tests/offline_history.rs`).
 
 ### Phase 4 — Distributed storage
 Content-addressed chunks (BLAKE3, ChaCha20-Poly1305, owner signature),

@@ -25,9 +25,14 @@ hex.workspace = true
 sequoia-openpgp.workspace = true
 yosemite.workspace = true
 serde_bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+blake3.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+fantuan-client = { path = "../fantuan-client" }
 
 [features]
 # Enables the real-I2P integration test in tests/i2p_session.rs.

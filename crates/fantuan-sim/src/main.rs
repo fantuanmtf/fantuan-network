@@ -47,13 +47,12 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            if let Some(parent) = out.parent() {
-                if !parent.as_os_str().is_empty() {
-                    if let Err(error) = std::fs::create_dir_all(parent) {
-                        eprintln!("error: cannot create {}: {error}", parent.display());
-                        std::process::exit(1);
-                    }
-                }
+            if let Some(parent) = out.parent()
+                && !parent.as_os_str().is_empty()
+                && let Err(error) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("error: cannot create {}: {error}", parent.display());
+                std::process::exit(1);
             }
             let json = match serde_json::to_string_pretty(&transcript) {
                 Ok(json) => json,

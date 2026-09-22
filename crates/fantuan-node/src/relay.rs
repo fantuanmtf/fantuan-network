@@ -53,7 +53,7 @@ pub fn handle(state: &Arc<NodeState>, peer: &BoundPeer, relay: Relay) -> Result<
             }
             other => {
                 tracing::debug!("relayed object delivered: {other:?}");
-                state.emit(NodeEvent::Received {
+                state.emit(NodeEvent::Relay {
                     from: relay.origin.clone(),
                 });
             }

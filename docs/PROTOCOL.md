@@ -86,10 +86,13 @@ text tag:
 
 | Tag | Payload |
 |-----|---------|
-| `message` | `Message` |
-| `forum_post` | `ForumPost` (Phase 3) |
+| `message` | `Message` (direct message) |
+| `channel_message` | `ChannelMessage` (section 8) |
+| `forum_post` | `ForumPost` (section 8) |
+| `history_request` | `HistoryRequest` (section 8) |
+| `history_response` | `HistoryResponse` (section 8) |
+| `delete_request` | `DeleteRequest` (section 8) |
 | `file_chunk` | `FileChunk` (Phase 4) |
-| `delete_request` | `DeleteRequest` (Phase 3) |
 | `ping` | monotonic uint + timestamp |
 | `pong` | echo of the ping timestamp |
 | `gossip` | descriptors + trust vouches (section 6) |
@@ -157,7 +160,45 @@ Relay { origin, to, nonce, timestamp, hops_left, signature, payload }
   relay with `to` different from the local fingerprint is forwarded to the
   next hop one hop closer (`hops_left - 1`).
 
-## 8. Failure handling
+## 8. Channels, forums and offline delivery
+
+```
+ChannelMessage { id, sender, channel, timestamp, text, signature }
+ForumPost      { id, sender, board, title, body, timestamp, signature }
+HistoryRequest { topic, is_board, since }
+HistoryResponse{ topic, is_board, messages[], posts[] }
+DeleteRequest  { sender, target, timestamp, signature }
+```
+
+- Bodies are canonical CBOR prefixed with a domain separator
+  (`fantuan-channel-v1`, `fantuan-forum-v1`); ids are BLAKE3 over the body.
+- Limits: channel text ≤ 8 KiB, title 1..=256 B, forum body ≤ 32 KiB, topic
+  names ≤ 64 B of `A-Za-z0-9#-_. /`.
+- A node only stores and forwards objects for topics it subscribes to. The
+  first time an object id is stored it is emitted locally and flooded to all
+  other connected peers; later copies are dropped.
+- On every new session a node sends one `HistoryRequest` per subscription
+  with `since` = the newest timestamp it has stored. The peer answers with at
+  most 200 messages or 100 posts, which are individually verified against the
+  sender certificates before storage.
+- `DeleteRequest` must be signed by the same key that created the target
+  object; a node deletes the object and floods the request only when
+  something was actually removed.
+
+## 9. Local interfaces
+
+Both interfaces are local-only and are not part of the peer protocol.
+
+- **Control socket** (`data_dir/control.sock`, mode 0600, newline-delimited
+  JSON): `status`, `post`, `forum`, `read`, `read_forum`, `send`, `peers`,
+  `events`. The `events` command switches the connection to a stream of
+  event lines (`channel`, `forum`, `message`, `relay`).
+- **IRC bridge** (optional, bind address from `irc_addr`, loopback
+  recommended): `NICK`, `USER`, `JOIN`, `PART`, `PRIVMSG`, `PING`, `QUIT`.
+  `PRIVMSG #channel :text` publishes a channel message; stored channel
+  events are broadcast to every IRC client that joined the channel.
+
+## 10. Failure handling
 
 - Handshake timeout: 10 seconds.
 - Idle read timeout: 120 seconds.

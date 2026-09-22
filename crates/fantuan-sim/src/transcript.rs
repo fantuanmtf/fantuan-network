@@ -72,10 +72,10 @@ impl Transcript {
             .collect();
         for observation in &self.observations {
             let epoch = (observation.at_ms / epoch_ms) as usize;
-            if epoch < epochs {
-                if let Some(values) = series.get_mut(&observation.sender) {
-                    values[epoch] += 1.0;
-                }
+            if epoch < epochs
+                && let Some(values) = series.get_mut(&observation.sender)
+            {
+                values[epoch] += 1.0;
             }
         }
         series

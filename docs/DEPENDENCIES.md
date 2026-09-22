@@ -32,6 +32,8 @@ dependency must be listed here with its purpose and fallback.
 | `blake3` | object ids | |
 | `getrandom` | key material | OS entropy |
 | `zeroize` | secret hygiene | secrets cleared on drop |
+| `ratatui` + `crossterm` | TUI client | terminal rendering and input |
+| `rusqlite` | message store | channel/forum history, dedup and sync |
 | `tracing` + `tracing-subscriber` | structured logging | |
 
 ## 4. Evaluated I2P SAM clients

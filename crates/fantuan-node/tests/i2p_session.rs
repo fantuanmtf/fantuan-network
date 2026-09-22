@@ -127,6 +127,7 @@ fn node_state(
     let dir = tempfile::tempdir().expect("tempdir");
     let identity = Arc::new(Identity::generate(uid, &format!("dest-{uid}")).expect("identity"));
     let trust = TrustStore::open(&dir.path().join("trust.sqlite")).expect("trust");
+    let messages = fantuan_node::store::MessageStore::in_memory().expect("messages");
     let (events_tx, events) = mpsc::unbounded_channel();
     let config = NodeConfig {
         handshake_timeout_secs: 180,
@@ -134,7 +135,7 @@ fn node_state(
         ..NodeConfig::default()
     };
     (
-        NodeState::new(identity, config, trust, events_tx),
+        NodeState::new(identity, config, trust, messages, events_tx),
         dir,
         events,
     )

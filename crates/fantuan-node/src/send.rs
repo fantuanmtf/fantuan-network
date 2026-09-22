@@ -74,14 +74,14 @@ pub async fn send(config: &NodeConfig, via: &str, to: &str, text: &str) -> Resul
         };
         if let Ok(Object::Gossip(gossip)) = Object::from_canonical_bytes(&bytes) {
             for announcement in &gossip.announcements {
-                if let Ok(descriptor) = Descriptor::from_canonical(&announcement.descriptor) {
-                    if descriptor.verify(&announcement.signature).is_ok() {
-                        learned_target = match_resolve(&descriptor, to).or(learned_target);
-                        candidates.insert(
-                            descriptor.fingerprint.clone(),
-                            descriptor.openpgp_cert.clone(),
-                        );
-                    }
+                if let Ok(descriptor) = Descriptor::from_canonical(&announcement.descriptor)
+                    && descriptor.verify(&announcement.signature).is_ok()
+                {
+                    learned_target = match_resolve(&descriptor, to).or(learned_target);
+                    candidates.insert(
+                        descriptor.fingerprint.clone(),
+                        descriptor.openpgp_cert.clone(),
+                    );
                 }
             }
         }

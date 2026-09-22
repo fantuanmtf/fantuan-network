@@ -1,0 +1,24 @@
+[package]
+name = "fantuan-client"
+description = "Fantuan Network TUI client"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fantuan"
+path = "src/main.rs"
+
+[dependencies]
+fantuan-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

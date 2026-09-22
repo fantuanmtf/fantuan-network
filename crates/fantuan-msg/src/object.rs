@@ -8,6 +8,7 @@
 use crate::error::{MsgError, Result};
 use crate::gossip::Gossip;
 use crate::message::Message;
+use crate::post::{ChannelMessage, DeleteRequest, ForumPost, HistoryRequest, HistoryResponse};
 use crate::relay::Relay;
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +37,16 @@ pub enum Object {
     Gossip(Gossip),
     /// End-to-end encrypted relay envelope.
     Relay(Relay),
+    /// A signed channel message.
+    ChannelMessage(ChannelMessage),
+    /// A signed forum post.
+    ForumPost(ForumPost),
+    /// A request for missing topic history.
+    HistoryRequest(HistoryRequest),
+    /// A history response with signed messages or posts.
+    HistoryResponse(HistoryResponse),
+    /// A signed request to delete one of the sender's objects.
+    DeleteRequest(DeleteRequest),
 }
 
 impl Object {
@@ -75,6 +86,13 @@ impl Object {
         if let Object::Gossip(gossip) = &object {
             gossip.validate_limits()?;
         }
+        match &object {
+            Object::HistoryRequest(request) => request.validate()?,
+            Object::HistoryResponse(response) => response.validate()?,
+            Object::ChannelMessage(message) => message.validate()?,
+            Object::ForumPost(post) => post.validate()?,
+            _ => {}
+        }
         Ok(object)
     }
 }
@@ -82,6 +100,7 @@ impl Object {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::post::MAX_HISTORY_MESSAGES;
     use fantuan_identity::Identity;
     use fantuan_identity::keys::cert_from_bytes;
 
@@ -124,14 +143,65 @@ mod tests {
 
     #[test]
     fn unknown_tag_is_rejected() {
-        // {"forum_post": {}} — a known planned tag with no implementation
+        // {"file_chunk": {}} — a known planned tag with no implementation
         // must not decode into an empty object.
         let value = ciborium::Value::Map(vec![(
-            ciborium::Value::Text("forum_post".to_string()),
+            ciborium::Value::Text("file_chunk".to_string()),
             ciborium::Value::Map(vec![]),
         )]);
         let mut bytes = Vec::new();
         ciborium::into_writer(&value, &mut bytes).expect("encode");
+        assert!(Object::from_canonical_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn roundtrip_social_objects() {
+        let identity = Identity::generate("social", "dest").expect("identity");
+
+        let channel = Object::ChannelMessage(
+            crate::post::ChannelMessage::create(&identity, "#general", "hi").expect("channel"),
+        );
+        let forum = Object::ForumPost(
+            crate::post::ForumPost::create(&identity, "bbs", "title", "body").expect("forum"),
+        );
+        let request =
+            Object::HistoryRequest(crate::post::HistoryRequest::new("#general", false, 1));
+        let response = Object::HistoryResponse(crate::post::HistoryResponse::new(
+            "#general",
+            false,
+            vec![],
+            vec![],
+        ));
+        let delete = Object::DeleteRequest(
+            crate::post::DeleteRequest::create(&identity, &[3u8; 32]).expect("delete"),
+        );
+
+        for object in [channel, forum, request, response, delete] {
+            let bytes = object.to_canonical_bytes().expect("encode");
+            let parsed = Object::from_canonical_bytes(&bytes).expect("decode");
+            assert_eq!(parsed, object);
+        }
+    }
+
+    #[test]
+    fn oversized_history_response_is_rejected_on_decode() {
+        let identity = Identity::generate("history", "dest").expect("identity");
+        let messages: Vec<crate::post::ChannelMessage> = (0..=MAX_HISTORY_MESSAGES)
+            .map(|i| {
+                crate::post::ChannelMessage::create(&identity, "#g", &format!("m{i}"))
+                    .expect("message")
+            })
+            .collect();
+        let response = Object::HistoryResponse(crate::post::HistoryResponse::new(
+            "#g",
+            false,
+            messages,
+            vec![],
+        ));
+        // Encode without the decode-time validation to simulate a malicious
+        // peer sending an over-limit response.
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&response, &mut bytes).expect("encode");
         assert!(Object::from_canonical_bytes(&bytes).is_err());
     }
 

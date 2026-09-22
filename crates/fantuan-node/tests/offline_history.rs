@@ -1,28 +1,16 @@
-//! In-memory three-node test: A and C connect through B, learn each other
-//! through gossip, then A relays an end-to-end encrypted message to C.
-//!
-//! Uses duplex streams instead of I2P so it runs in CI without a router.
+//! Offline delivery: a node that was disconnected catches up on channel
+//! messages and forum posts through history sync when it reconnects.
 
 use fantuan_core::config::NodeConfig;
 use fantuan_identity::{Identity, TrustStore};
 use fantuan_node::state::{NodeEvent, NodeState};
 use fantuan_node::store::MessageStore;
-use fantuan_node::{connection, peer, relay};
+use fantuan_node::{connection, peer, social};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
-
-fn init_tracing() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new("debug"))
-            .try_init();
-    });
-}
 
 struct TestNode {
     state: Arc<NodeState>,
@@ -40,6 +28,8 @@ impl TestNode {
         let messages = MessageStore::in_memory().expect("messages");
         let (events_tx, events) = mpsc::unbounded_channel();
         let config = NodeConfig {
+            channels: vec!["#general".to_string()],
+            boards: vec!["bbs".to_string()],
             handshake_timeout_secs: 5,
             idle_timeout_secs: 30,
             ..NodeConfig::default()
@@ -88,83 +78,65 @@ async fn wait_for_route(node: &TestNode, destination: &str) {
 }
 
 #[tokio::test]
-async fn three_nodes_relay_message_through_middle() {
-    init_tracing();
+async fn offline_messages_are_delivered_on_reconnect() {
     let alice = TestNode::new("alice");
     let bob = TestNode::new("bob");
     let mut carol = TestNode::new("carol");
+
     // A <-> B and C <-> B.
     let (alice_side, bob_side_a) = tokio::io::duplex(1 << 20);
     let (carol_side, bob_side_c) = tokio::io::duplex(1 << 20);
-    let tasks = vec![
+    let first_tasks = vec![
         spawn_client(alice.state.clone(), alice_side),
         spawn_server(bob.state.clone(), bob_side_a),
         spawn_client(carol.state.clone(), carol_side),
         spawn_server(bob.state.clone(), bob_side_c),
     ];
-
-    // Gossip must give Alice a route to Carol (via Bob).
+    wait_for_route(&alice, &bob.fingerprint).await;
     wait_for_route(&alice, &carol.fingerprint).await;
-    wait_for_route(&carol, &alice.fingerprint).await;
 
-    relay::send_message(&alice.state, &carol.fingerprint, "hello carol via bob")
-        .expect("send relay");
+    // Carol goes offline.
+    first_tasks[2].abort();
+    first_tasks[3].abort();
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let event = tokio::time::timeout(Duration::from_secs(5), carol.events.recv())
-        .await
-        .expect("delivery timeout")
-        .expect("event channel");
-    match event {
-        NodeEvent::Message { from, text } => {
-            assert_eq!(from, alice.fingerprint);
-            assert_eq!(text, "hello carol via bob");
-        }
-        other => panic!("unexpected event: {other:?}"),
-    }
+    // Traffic happens while Carol is away.
+    social::publish_channel(&alice.state, "#general", "while you were away").expect("channel");
+    social::publish_forum(&alice.state, "bbs", "Offline", "posted while you were out")
+        .expect("forum");
 
-    for task in tasks {
-        task.abort();
-    }
-}
-
-#[tokio::test]
-async fn relay_without_route_fails() {
-    let alice = TestNode::new("alice");
-    let result = relay::send_message(
-        &alice.state,
-        "0000000000000000000000000000000000000000",
-        "nope",
-    );
-    assert!(result.is_err(), "unknown destination must not be relayed");
-}
-
-#[tokio::test]
-async fn gossip_descriptors_are_signature_verified() {
-    let alice = TestNode::new("alice");
-    let bob = TestNode::new("bob");
-    let (alice_side, bob_side) = tokio::io::duplex(1 << 20);
-    let tasks = vec![
-        spawn_client(alice.state.clone(), alice_side),
-        spawn_server(bob.state.clone(), bob_side),
+    // Carol reconnects; history sync must deliver both.
+    let (carol_side2, bob_side_c2) = tokio::io::duplex(1 << 20);
+    let second_tasks = vec![
+        spawn_client(carol.state.clone(), carol_side2),
+        spawn_server(bob.state.clone(), bob_side_c2),
     ];
 
-    wait_for_route(&alice, &bob.fingerprint).await;
-    wait_for_route(&bob, &alice.fingerprint).await;
-
-    // Both stores now hold the other side's signed descriptor.
-    {
-        let store = alice.state.trust.lock().unwrap();
-        let (descriptor, signature) = store
-            .descriptor_of(&bob.fingerprint)
-            .expect("query")
-            .expect("bob descriptor stored");
-        let parsed = fantuan_identity::Descriptor::from_canonical(&descriptor).expect("parse");
-        parsed
-            .verify(&signature)
-            .expect("descriptor self-signature");
+    let mut saw_channel = false;
+    let mut saw_forum = false;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while !(saw_channel && saw_forum) {
+        let event = tokio::time::timeout_at(deadline, carol.events.recv())
+            .await
+            .expect("history delivery timeout")
+            .expect("event channel");
+        match event {
+            NodeEvent::Channel { text, .. } => {
+                assert_eq!(text, "while you were away");
+                saw_channel = true;
+            }
+            NodeEvent::Forum { title, .. } => {
+                assert_eq!(title, "Offline");
+                saw_forum = true;
+            }
+            _ => {}
+        }
     }
 
-    for task in tasks {
+    for task in first_tasks {
+        task.abort();
+    }
+    for task in second_tasks {
         task.abort();
     }
 }

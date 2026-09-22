@@ -31,6 +31,11 @@ reference-only. No code is merged from it without re-derivation and tests.
    hops can verify the origin but cannot read content.
 8. Relay admission is keyed by the verified origin fingerprint and TOFU-pins
    the origin certificate, so claimed identities cannot multiply quotas.
+9. Local interfaces are host-local: the control socket is created with mode
+   0600, and the IRC bridge should bind a loopback address. They grant full
+   control of the local node and must never be exposed to a network.
+10. Deletes are only honoured when signed by the same key that created the
+    target object.
 
 ## 3. Key handling
 
@@ -42,13 +47,17 @@ reference-only. No code is merged from it without re-derivation and tests.
 - Files are created with restrictive permissions from the first write.
 - Secret buffers use `zeroize` where the type system allows it.
 
-## 4. Known limitations (Phase 2)
+## 4. Known limitations (Phase 3)
 
 - I2P anonymity assumptions are inherited from the local i2pd router.
 - Relay metadata (origin fingerprint, destination fingerprint, timing, size)
   is visible to every hop; DC-Net and traffic shaping arrive in Phase 5.
+- Channel and forum metadata (senders, topics, timing, sizes) is visible to
+  connected peers that subscribe to the same topic.
 - Gossip reveals the local peer list to direct peers; propagation is
   bounded but not differentially private.
+- History is served from the local store with a per-request cap; there is no
+  global consistency guarantee between peers.
 - Trust scoring uses locally stored vouches; revoked or stale vouches are not
   yet expired automatically.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake

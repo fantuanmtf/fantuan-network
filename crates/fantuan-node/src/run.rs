@@ -5,6 +5,7 @@ use crate::connection;
 use crate::identity_cmd;
 use crate::peer;
 use crate::state::{NodeEvent, NodeState};
+use crate::store::MessageStore;
 use anyhow::{Context, Result, anyhow, bail};
 use fantuan_core::{config::NodeConfig, time};
 use fantuan_identity::TrustStore;
@@ -39,8 +40,9 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
     let destination = inbound.destination().to_string();
 
     let trust = TrustStore::open(&config.trust_db_path())?;
+    let messages = MessageStore::open(&config.messages_db_path())?;
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-    let state = NodeState::new(identity.clone(), config.clone(), trust, events_tx);
+    let state = NodeState::new(identity.clone(), config.clone(), trust, messages, events_tx);
 
     println!("fantuan-node running");
     println!("  uid:         {}", identity.descriptor().uid);
@@ -51,9 +53,18 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
         while let Some(event) = events_rx.recv().await {
             match event {
                 NodeEvent::Message { from, text } => println!("[{}] {}", short(&from), text),
-                NodeEvent::Received { from } => {
+                NodeEvent::Relay { from } => {
                     println!("[relay] envelope delivered from {}", short(&from));
                 }
+                NodeEvent::Channel {
+                    channel,
+                    from,
+                    text,
+                    ..
+                } => println!("[{channel}] {}: {text}", short(&from)),
+                NodeEvent::Forum {
+                    board, from, title, ..
+                } => println!("[bbs:{board}] {}: {title}", short(&from)),
             }
         }
     });
@@ -66,6 +77,27 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
             let _ = shutdown.send(true);
         }
     });
+
+    if let Some(socket) = config.control_socket_path() {
+        let control_state = state.clone();
+        let control_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = crate::control::serve(control_state, socket, control_shutdown).await
+            {
+                tracing::warn!("control socket ended: {error:#}");
+            }
+        });
+    }
+
+    if let Some(addr) = config.irc_addr.clone() {
+        let irc_state = state.clone();
+        let irc_shutdown = shutdown_rx.clone();
+        tokio::spawn(async move {
+            if let Err(error) = crate::irc::serve(irc_state, &addr, irc_shutdown).await {
+                tracing::warn!("IRC bridge ended: {error:#}");
+            }
+        });
+    }
 
     let accept_state = state.clone();
     let accept_shutdown = shutdown_rx.clone();

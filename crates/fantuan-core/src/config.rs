@@ -32,6 +32,14 @@ pub struct NodeConfig {
     pub idle_timeout_secs: u64,
     /// Peer destinations dialed on startup (I2P base64 or hostnames).
     pub peers: Vec<String>,
+    /// Channels this node subscribes to and stores (e.g. `#general`).
+    pub channels: Vec<String>,
+    /// Forum boards this node subscribes to and stores.
+    pub boards: Vec<String>,
+    /// Local control socket path (relative paths resolve under `data_dir`).
+    pub control_socket: Option<String>,
+    /// Local IRC bridge listen address, when enabled.
+    pub irc_addr: Option<String>,
 }
 
 impl Default for NodeConfig {
@@ -44,6 +52,10 @@ impl Default for NodeConfig {
             handshake_timeout_secs: 10,
             idle_timeout_secs: 120,
             peers: Vec::new(),
+            channels: Vec::new(),
+            boards: Vec::new(),
+            control_socket: Some("control.sock".to_string()),
+            irc_addr: None,
         }
     }
 }
@@ -74,6 +86,23 @@ impl NodeConfig {
     /// Path of the trust database.
     pub fn trust_db_path(&self) -> PathBuf {
         self.data_dir.join("trust.sqlite")
+    }
+
+    /// Path of the message database.
+    pub fn messages_db_path(&self) -> PathBuf {
+        self.data_dir.join("messages.sqlite")
+    }
+
+    /// Path of the local control socket, if enabled.
+    pub fn control_socket_path(&self) -> Option<PathBuf> {
+        self.control_socket.as_ref().map(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                path
+            } else {
+                self.data_dir.join(path)
+            }
+        })
     }
 }
 

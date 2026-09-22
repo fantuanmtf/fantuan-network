@@ -7,12 +7,13 @@ members = [
     "crates/fantuan-transport",
     "crates/fantuan-sim",
     "crates/fantuan-node",
+    "crates/fantuan-client",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "BSD-3-Clause"
 authors = ["fantuanmtf"]
 repository = "https://github.com/fantuanmtf/fantuan-network"
@@ -42,6 +43,8 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Crypto and identity
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-nettle"] }

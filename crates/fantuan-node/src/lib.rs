@@ -5,13 +5,17 @@
 
 pub mod admission;
 pub mod connection;
+pub mod control;
 pub mod gossip;
 pub mod identity_cmd;
+pub mod irc;
 pub mod peer;
 pub mod relay;
 pub mod run;
 pub mod send;
+pub mod social;
 pub mod state;
+pub mod store;
 
 use anyhow::Result;
 use fantuan_core::config::NodeConfig;

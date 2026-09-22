@@ -31,7 +31,7 @@ depend on layers below it, plus `fantuan-core` for shared primitives.
 | `fantuan-storage` | Storage | core | Phase 4 |
 | `fantuan-anon` | Anonymous | core, msg | Phase 5 |
 | `fantuan-traffic` | Anonymous | core | Phase 5 |
-| `fantuan-client` | Application | core, msg, transport | Phase 3 |
+| `fantuan-client` | Application | core (control protocol) | Phase 3 |
 
 Crates are added when their phase starts; no placeholder crates are kept.
 

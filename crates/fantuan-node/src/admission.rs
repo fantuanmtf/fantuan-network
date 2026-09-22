@@ -62,10 +62,10 @@ impl AdmissionControl {
     /// Checks nonce monotonicity, the freshness window and the rate limit,
     /// then records the nonce.
     pub fn check(&mut self, fingerprint: &str, nonce: u64, timestamp: u64, now: u64) -> Result<()> {
-        if let Some(&last) = self.last_nonce.get(fingerprint) {
-            if nonce <= last {
-                bail!("replayed relay nonce {nonce} (last {last})");
-            }
+        if let Some(&last) = self.last_nonce.get(fingerprint)
+            && nonce <= last
+        {
+            bail!("replayed relay nonce {nonce} (last {last})");
         }
 
         if now.abs_diff(timestamp) > crate::relay::MAX_AGE_SECS {

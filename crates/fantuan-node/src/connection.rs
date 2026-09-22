@@ -8,7 +8,7 @@
 use crate::peer::BoundPeer;
 use crate::state::{NodeEvent, NodeState};
 use anyhow::{Result, anyhow};
-use fantuan_msg::Object;
+use fantuan_msg::{HistoryRequest, Object};
 use fantuan_transport::DEFAULT_WRITER_QUEUE;
 use std::sync::Arc;
 use std::time::Duration;
@@ -30,6 +30,32 @@ where
     if !gossip.is_empty() {
         let bytes = Object::Gossip(gossip).to_canonical_bytes()?;
         peer.session.send(&mut stream, &bytes).await?;
+    }
+
+    // Ask for anything we missed while this peer was disconnected.
+    let requests: Vec<Object> = {
+        let subscriptions = state.subscription_list();
+        let store = state
+            .messages
+            .lock()
+            .map_err(|_| anyhow!("message store poisoned"))?;
+        let mut requests = Vec::new();
+        for (topic, is_board) in subscriptions {
+            let since = if is_board {
+                store.latest_forum_timestamp(&topic)?
+            } else {
+                store.latest_channel_timestamp(&topic)?
+            };
+            requests.push(Object::HistoryRequest(HistoryRequest::new(
+                &topic, is_board, since,
+            )));
+        }
+        requests
+    };
+    for request in requests {
+        peer.session
+            .send(&mut stream, &request.to_canonical_bytes()?)
+            .await?;
     }
 
     let result = loop {
@@ -100,6 +126,41 @@ where
         }
         Object::Relay(relay) => {
             crate::relay::handle(state, peer, relay)?;
+        }
+        Object::ChannelMessage(message) => {
+            crate::social::handle_channel(
+                state,
+                peer.fingerprint(),
+                &peer.descriptor.openpgp_cert,
+                message,
+            )?;
+        }
+        Object::ForumPost(post) => {
+            crate::social::handle_forum(
+                state,
+                peer.fingerprint(),
+                &peer.descriptor.openpgp_cert,
+                post,
+            )?;
+        }
+        Object::HistoryRequest(request) => {
+            if let Some(response) = crate::social::handle_history_request(state, &request)? {
+                peer.session
+                    .send(stream, &response.to_canonical_bytes()?)
+                    .await?;
+            }
+        }
+        Object::HistoryResponse(response) => {
+            let accepted = crate::social::handle_history_response(state, &response)?;
+            tracing::debug!(accepted, "history received");
+        }
+        Object::DeleteRequest(delete) => {
+            crate::social::handle_delete(
+                state,
+                peer.fingerprint(),
+                &peer.descriptor.openpgp_cert,
+                delete,
+            )?;
         }
     }
     Ok(())
