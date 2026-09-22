@@ -65,6 +65,19 @@ pub struct PeerRow {
     pub trust: f64,
 }
 
+/// One stored file manifest.
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileRow {
+    /// File id (hex).
+    pub file_id: String,
+    /// Owner fingerprint.
+    pub owner: String,
+    /// File name.
+    pub name: String,
+    /// Plaintext size.
+    pub size: u64,
+}
+
 /// An event pushed by the node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -198,6 +211,27 @@ impl ControlClient {
     pub async fn peers(&mut self) -> Result<Vec<PeerRow>> {
         let value = self.request(json!({"cmd": "peers"})).await?;
         Ok(serde_json::from_value(value["peers"].clone())?)
+    }
+
+    /// Publish a local file; returns the file id.
+    pub async fn file_put(&mut self, path: &str, to: Option<&str>) -> Result<String> {
+        let value = self
+            .request(json!({"cmd": "file_put", "path": path, "to": to}))
+            .await?;
+        Ok(value["file_id"].as_str().unwrap_or_default().to_string())
+    }
+
+    /// Retrieve a file by id into `out`.
+    pub async fn file_get(&mut self, file_id: &str, out: &str) -> Result<()> {
+        self.request(json!({"cmd": "file_get", "file_id": file_id, "out": out}))
+            .await?;
+        Ok(())
+    }
+
+    /// List stored manifests.
+    pub async fn files(&mut self) -> Result<Vec<FileRow>> {
+        let value = self.request(json!({"cmd": "files"})).await?;
+        Ok(serde_json::from_value(value["files"].clone())?)
     }
 
     /// Switch to event streaming mode.

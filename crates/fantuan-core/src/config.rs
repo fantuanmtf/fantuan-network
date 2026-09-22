@@ -14,6 +14,9 @@ pub const DEFAULT_SAM_ADDR: &str = "127.0.0.1:7656";
 /// Default maximum frame size in bytes (64 KiB).
 pub const DEFAULT_MAX_FRAME_BYTES: usize = 65536;
 
+/// Default chunk-cache byte budget (64 MiB).
+pub const DEFAULT_STORAGE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+
 /// Node configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -40,6 +43,8 @@ pub struct NodeConfig {
     pub control_socket: Option<String>,
     /// Local IRC bridge listen address, when enabled.
     pub irc_addr: Option<String>,
+    /// Chunk cache byte budget.
+    pub storage_max_bytes: u64,
 }
 
 impl Default for NodeConfig {
@@ -56,6 +61,7 @@ impl Default for NodeConfig {
             boards: Vec::new(),
             control_socket: Some("control.sock".to_string()),
             irc_addr: None,
+            storage_max_bytes: DEFAULT_STORAGE_MAX_BYTES,
         }
     }
 }
@@ -91,6 +97,11 @@ impl NodeConfig {
     /// Path of the message database.
     pub fn messages_db_path(&self) -> PathBuf {
         self.data_dir.join("messages.sqlite")
+    }
+
+    /// Path of the content-addressed chunk cache.
+    pub fn chunks_db_path(&self) -> PathBuf {
+        self.data_dir.join("chunks.redb")
     }
 
     /// Path of the local control socket, if enabled.

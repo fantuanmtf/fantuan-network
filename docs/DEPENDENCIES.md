@@ -33,6 +33,8 @@ dependency must be listed here with its purpose and fallback.
 | `getrandom` | key material | OS entropy |
 | `zeroize` | secret hygiene | secrets cleared on drop |
 | `ratatui` + `crossterm` | TUI client | terminal rendering and input |
+| `redb` | chunk cache | pure-Rust embedded key/value store with a byte budget |
+| `chacha20poly1305` | chunk encryption | AEAD with per-chunk random nonces and AAD binding |
 | `rusqlite` | message store | channel/forum history, dedup and sync |
 | `tracing` + `tracing-subscriber` | structured logging | |
 

@@ -575,6 +575,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
 dependencies = [
  "generic-array 0.14.7",
+ "rand_core 0.6.4",
  "typenum",
 ]
 
@@ -872,6 +873,7 @@ dependencies = [
  "fantuan-core",
  "fantuan-identity",
  "fantuan-msg",
+ "fantuan-storage",
  "fantuan-transport",
  "hex",
  "rusqlite",
@@ -894,6 +896,25 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.20",
+]
+
+[[package]]
+name = "fantuan-storage"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chacha20poly1305",
+ "ciborium",
+ "fantuan-core",
+ "fantuan-identity",
+ "fantuan-msg",
+ "getrandom 0.3.4",
+ "redb",
+ "serde",
+ "serde_bytes",
+ "tempfile",
+ "thiserror 2.0.20",
+ "zeroize",
 ]
 
 [[package]]
@@ -2138,6 +2159,15 @@ dependencies = [
  "time",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "redb"
+version = "4.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb338a6c67830a61bed824b78c2bb034ab1ff401a20616bd7957524f4fdc2f22"
+dependencies = [
+ "libc",
 ]
 
 [[package]]

@@ -51,6 +51,9 @@ pub fn handle(state: &Arc<NodeState>, peer: &BoundPeer, relay: Relay) -> Result<
                     text,
                 });
             }
+            Object::FileManifest(manifest) => {
+                crate::files::handle_manifest(state, manifest, &relay.origin, &origin_cert_bytes)?;
+            }
             other => {
                 tracing::debug!("relayed object delivered: {other:?}");
                 state.emit(NodeEvent::Relay {
@@ -72,10 +75,15 @@ pub fn handle(state: &Arc<NodeState>, peer: &BoundPeer, relay: Relay) -> Result<
 
 /// Encrypt and send a text message to `to` over the relay layer.
 pub fn send_message(state: &Arc<NodeState>, to: &str, text: &str) -> Result<()> {
+    let message = Message::create(&state.identity, text.as_bytes())?;
+    send_object(state, to, Object::Message(message))
+}
+
+/// Encrypt and send an arbitrary object to `to` over the relay layer.
+pub fn send_object(state: &Arc<NodeState>, to: &str, inner: Object) -> Result<()> {
     let cert_bytes = cert_bytes_for(state, to)?;
     let cert = cert_from_bytes(&cert_bytes)?;
-    let inner =
-        Object::Message(Message::create(&state.identity, text.as_bytes())?).to_canonical_bytes()?;
+    let inner = inner.to_canonical_bytes()?;
     let payload = encrypt_for(&cert, &inner)?;
 
     let nonce = state.next_relay_nonce();

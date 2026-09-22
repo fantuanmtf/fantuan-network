@@ -10,6 +10,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use fantuan_core::{config::NodeConfig, time};
 use fantuan_identity::TrustStore;
 use fantuan_msg::{Message, Object};
+use fantuan_storage::ChunkCache;
 use fantuan_transport::sam::{SamConfig, SamSession};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -41,8 +42,16 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
 
     let trust = TrustStore::open(&config.trust_db_path())?;
     let messages = MessageStore::open(&config.messages_db_path())?;
+    let chunks = ChunkCache::open(&config.chunks_db_path(), config.storage_max_bytes)?;
     let (events_tx, mut events_rx) = mpsc::unbounded_channel();
-    let state = NodeState::new(identity.clone(), config.clone(), trust, messages, events_tx);
+    let state = NodeState::new(
+        identity.clone(),
+        config.clone(),
+        trust,
+        messages,
+        chunks,
+        events_tx,
+    );
 
     println!("fantuan-node running");
     println!("  uid:         {}", identity.descriptor().uid);
@@ -65,6 +74,18 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
                 NodeEvent::Forum {
                     board, from, title, ..
                 } => println!("[bbs:{board}] {}: {title}", short(&from)),
+                NodeEvent::FileAvailable {
+                    file_id,
+                    name,
+                    size,
+                    from,
+                } => println!(
+                    "[file] {} sent {} ({} bytes, id {})",
+                    short(&from),
+                    name,
+                    size,
+                    &file_id[..16.min(file_id.len())]
+                ),
             }
         }
     });

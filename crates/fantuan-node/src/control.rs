@@ -39,6 +39,15 @@ enum Request {
         to: String,
         text: String,
     },
+    FilePut {
+        path: String,
+        to: Option<String>,
+    },
+    FileGet {
+        file_id: String,
+        out: String,
+    },
+    Files,
     Peers,
     Events,
 }
@@ -212,6 +221,34 @@ async fn dispatch(state: &Arc<NodeState>, request: Request) -> Value {
                 Err(error) => json!({"ok": false, "error": error.to_string()}),
             }
         }
+        Request::FilePut { path, to } => {
+            match crate::files::publish_file(state, std::path::Path::new(&path), to.as_deref()) {
+                Ok(file_id) => json!({"ok": true, "file_id": file_id}),
+                Err(error) => json!({"ok": false, "error": error.to_string()}),
+            }
+        }
+        Request::FileGet { file_id, out } => {
+            match crate::files::fetch_file(state, &file_id, std::path::Path::new(&out)).await {
+                Ok(()) => json!({"ok": true, "path": out}),
+                Err(error) => json!({"ok": false, "error": error.to_string()}),
+            }
+        }
+        Request::Files => match crate::files::list_files(state, 500) {
+            Ok(files) => json!({
+                "ok": true,
+                "files": files
+                    .into_iter()
+                    .map(|file| json!({
+                        "file_id": hex::encode(file.file_id),
+                        "owner": file.owner,
+                        "name": file.name,
+                        "size": file.size,
+                        "received_at": file.received_at,
+                    }))
+                    .collect::<Vec<_>>(),
+            }),
+            Err(error) => json!({"ok": false, "error": error.to_string()}),
+        },
         Request::Peers => {
             let store = match state.trust.lock() {
                 Ok(store) => store,

@@ -162,6 +162,25 @@ where
                 delete,
             )?;
         }
+        Object::FileChunk(chunk) => {
+            crate::files::handle_file_chunk(
+                state,
+                peer.fingerprint(),
+                &peer.descriptor.openpgp_cert,
+                chunk,
+            )?;
+        }
+        Object::ChunkRequest(request) => {
+            crate::files::handle_chunk_request(state, peer.fingerprint(), request)?;
+        }
+        Object::FileManifest(_) => {
+            // Manifests contain the file key and are only accepted inside
+            // relay envelopes (see relay::handle).
+            tracing::warn!(
+                peer = peer.descriptor.uid,
+                "ignoring manifest outside a relay envelope"
+            );
+        }
     }
     Ok(())
 }

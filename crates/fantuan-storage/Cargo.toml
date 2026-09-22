@@ -1,0 +1,25 @@
+[package]
+name = "fantuan-storage"
+description = "Content-addressed chunk storage, DHT routing and replication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fantuan-core.workspace = true
+fantuan-identity.workspace = true
+fantuan-msg.workspace = true
+serde.workspace = true
+serde_bytes.workspace = true
+ciborium.workspace = true
+thiserror.workspace = true
+blake3.workspace = true
+chacha20poly1305.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+redb.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

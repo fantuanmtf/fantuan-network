@@ -24,10 +24,11 @@ fn test_node() -> TestNode {
     let identity = Arc::new(Identity::generate("irc-node", "dest").expect("identity"));
     let trust = TrustStore::open(&dir.path().join("trust.sqlite")).expect("trust");
     let messages = MessageStore::in_memory().expect("messages");
+    let chunks = fantuan_storage::ChunkCache::in_memory(1 << 20).expect("chunks");
     let (events_tx, _events) = mpsc::unbounded_channel();
     let config = NodeConfig::default();
     TestNode {
-        state: NodeState::new(identity, config, trust, messages, events_tx),
+        state: NodeState::new(identity, config, trust, messages, chunks, events_tx),
         _dir: dir,
     }
 }

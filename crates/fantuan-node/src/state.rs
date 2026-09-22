@@ -8,12 +8,28 @@ use crate::admission::AdmissionControl;
 use crate::store::MessageStore;
 use fantuan_core::config::NodeConfig;
 use fantuan_identity::{Identity, TrustStore};
+use fantuan_storage::{ChunkCache, Contact, RoutingTable, node_id};
 use fantuan_transport::{ConnectionPool, DEFAULT_MAX_CONNECTIONS};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
+
+/// Reverse path for a forwarded chunk request.
+#[derive(Debug, Clone)]
+pub struct PendingChunkRoute {
+    /// Node that originated the request.
+    pub requester: String,
+    /// Peer we received the request from (next hop toward the requester).
+    pub via: String,
+    /// When this route expires.
+    pub expires: Instant,
+}
+
+/// How long a chunk request route is remembered.
+pub const CHUNK_ROUTE_TTL: Duration = Duration::from_secs(30);
 
 /// Events surfaced to the local operator.
 #[derive(Debug, Clone, Serialize)]
@@ -55,6 +71,17 @@ pub enum NodeEvent {
         /// Unix seconds.
         timestamp: u64,
     },
+    /// A file became available locally (manifest stored).
+    FileAvailable {
+        /// File id (hex).
+        file_id: String,
+        /// File name.
+        name: String,
+        /// Plaintext size.
+        size: u64,
+        /// Who sent the manifest.
+        from: String,
+    },
 }
 
 /// Topic subscriptions.
@@ -86,6 +113,13 @@ pub struct NodeState {
     pub pool: ConnectionPool,
     /// Console event sink.
     pub events: mpsc::UnboundedSender<NodeEvent>,
+    /// Content-addressed chunk cache.
+    pub chunks: Arc<ChunkCache>,
+    /// Kademlia routing table.
+    pub routing: Mutex<RoutingTable>,
+    /// Reverse paths for forwarded chunk requests.
+    pub chunk_routes: Mutex<HashMap<[u8; 32], Vec<PendingChunkRoute>>>,
+    seen_requests: Mutex<HashMap<([u8; 32], String), Instant>>,
     event_stream: broadcast::Sender<NodeEvent>,
     relay_nonce: AtomicU64,
 }
@@ -97,12 +131,14 @@ impl NodeState {
         config: NodeConfig,
         trust: TrustStore,
         messages: MessageStore,
+        chunks: ChunkCache,
         events: mpsc::UnboundedSender<NodeEvent>,
     ) -> Arc<Self> {
         let subscriptions = Subscriptions {
             channels: config.channels.iter().cloned().collect(),
             boards: config.boards.iter().cloned().collect(),
         };
+        let local_id = node_id(&identity.fingerprint_hex());
         let (event_stream, _) = broadcast::channel(1024);
         Arc::new(Self {
             identity,
@@ -114,6 +150,10 @@ impl NodeState {
             subscriptions: Mutex::new(subscriptions),
             pool: ConnectionPool::new(DEFAULT_MAX_CONNECTIONS),
             events,
+            chunks: Arc::new(chunks),
+            routing: Mutex::new(RoutingTable::new(local_id, 20)),
+            chunk_routes: Mutex::new(HashMap::new()),
+            seen_requests: Mutex::new(HashMap::new()),
             event_stream,
             relay_nonce: AtomicU64::new(0),
         })
@@ -225,5 +265,70 @@ impl NodeState {
     /// Next relay nonce for envelopes we originate.
     pub fn next_relay_nonce(&self) -> u64 {
         self.relay_nonce.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Record a peer in the Kademlia routing table.
+    pub fn observe_peer(&self, fingerprint: &str) {
+        let contact = Contact {
+            id: node_id(fingerprint),
+            fingerprint: fingerprint.to_string(),
+        };
+        if let Ok(mut routing) = self.routing.lock() {
+            routing.insert(contact);
+        }
+    }
+
+    /// Connected peers whose node id is closest to `target`.
+    pub fn closest_peers(&self, target: &[u8; 32], count: usize) -> Vec<String> {
+        let Ok(routing) = self.routing.lock() else {
+            return Vec::new();
+        };
+        routing
+            .closest(target, count)
+            .into_iter()
+            .map(|contact| contact.fingerprint)
+            .filter(|fingerprint| self.pool.is_connected(fingerprint))
+            .collect()
+    }
+
+    /// Remember the reverse path for a forwarded chunk request.
+    pub fn remember_chunk_route(&self, hash: &[u8; 32], requester: &str, via: &str) {
+        if let Ok(mut routes) = self.chunk_routes.lock() {
+            let entries = routes.entry(*hash).or_default();
+            entries.retain(|route| route.expires > Instant::now());
+            if entries.len() < 16 {
+                entries.push(PendingChunkRoute {
+                    requester: requester.to_string(),
+                    via: via.to_string(),
+                    expires: Instant::now() + CHUNK_ROUTE_TTL,
+                });
+            }
+        }
+    }
+
+    /// Take (and clear) unexpired reverse paths for a chunk hash.
+    pub fn take_chunk_routes(&self, hash: &[u8; 32]) -> Vec<PendingChunkRoute> {
+        let Ok(mut routes) = self.chunk_routes.lock() else {
+            return Vec::new();
+        };
+        let mut entries = routes.remove(hash).unwrap_or_default();
+        entries.retain(|route| route.expires > Instant::now());
+        entries
+    }
+
+    /// True when this `(hash, requester)` request was already seen recently.
+    pub fn seen_request(&self, hash: &[u8; 32], requester: &str) -> bool {
+        let Ok(mut seen) = self.seen_requests.lock() else {
+            return false;
+        };
+        seen.retain(|_, recorded| recorded.elapsed() < CHUNK_ROUTE_TTL);
+        if seen.contains_key(&(*hash, requester.to_string())) {
+            return true;
+        }
+        if seen.len() >= 4096 {
+            seen.clear();
+        }
+        seen.insert((*hash, requester.to_string()), Instant::now());
+        false
     }
 }

@@ -38,13 +38,14 @@ impl TestNode {
         let fingerprint = identity.fingerprint_hex();
         let trust = TrustStore::open(&dir.path().join("trust.sqlite")).expect("trust");
         let messages = MessageStore::in_memory().expect("messages");
+        let chunks = fantuan_storage::ChunkCache::in_memory(1 << 20).expect("chunks");
         let (events_tx, events) = mpsc::unbounded_channel();
         let config = NodeConfig {
             handshake_timeout_secs: 5,
             idle_timeout_secs: 30,
             ..NodeConfig::default()
         };
-        let state = NodeState::new(identity, config, trust, messages, events_tx);
+        let state = NodeState::new(identity, config, trust, messages, chunks, events_tx);
         Self {
             state,
             events,

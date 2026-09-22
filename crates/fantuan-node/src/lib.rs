@@ -6,6 +6,7 @@
 pub mod admission;
 pub mod connection;
 pub mod control;
+pub mod files;
 pub mod gossip;
 pub mod identity_cmd;
 pub mod irc;

@@ -212,6 +212,51 @@ async fn submit(input: &str, app: &mut App, client: &mut ControlClient) -> Resul
                 app.peers = peers.len();
                 app.status = format!("{} peers known", peers.len());
             }
+            "files" => match client.files().await {
+                Ok(files) => {
+                    app.status = format!("{} files stored", files.len());
+                    for file in files.iter().take(20) {
+                        let id = file
+                            .file_id
+                            .get(..16)
+                            .unwrap_or(file.file_id.as_str())
+                            .to_string();
+                        app.push(
+                            "files",
+                            DisplayLine {
+                                from: short(&file.owner).to_string(),
+                                timestamp: 0,
+                                text: format!("{} ({} bytes) {id}", file.name, file.size),
+                            },
+                        );
+                    }
+                }
+                Err(error) => app.status = format!("files failed: {error}"),
+            },
+            "put" => {
+                let mut rest = parts;
+                match (rest.next(), rest.next()) {
+                    (Some(path), to) => {
+                        match client.file_put(path.trim(), to.map(str::trim)).await {
+                            Ok(file_id) => app.status = format!("published {file_id}"),
+                            Err(error) => app.status = format!("put failed: {error}"),
+                        }
+                    }
+                    _ => app.status = "usage: /put <path> [recipient]".to_string(),
+                }
+            }
+            "get" => {
+                let mut rest = parts;
+                match (rest.next(), rest.next()) {
+                    (Some(file_id), Some(out)) => {
+                        match client.file_get(file_id.trim(), out.trim()).await {
+                            Ok(()) => app.status = format!("saved {out}"),
+                            Err(error) => app.status = format!("get failed: {error}"),
+                        }
+                    }
+                    _ => app.status = "usage: /get <file_id> <out>".to_string(),
+                }
+            }
             "dm" => {
                 let mut rest = parts;
                 if let (Some(to), Some(text)) = (rest.next(), rest.next()) {

@@ -6,6 +6,7 @@
 //! and trailing bytes are rejected.
 
 use crate::error::{MsgError, Result};
+use crate::file::{ChunkRequest, FileChunk, FileManifest};
 use crate::gossip::Gossip;
 use crate::message::Message;
 use crate::post::{ChannelMessage, DeleteRequest, ForumPost, HistoryRequest, HistoryResponse};
@@ -47,6 +48,12 @@ pub enum Object {
     HistoryResponse(HistoryResponse),
     /// A signed request to delete one of the sender's objects.
     DeleteRequest(DeleteRequest),
+    /// One encrypted, content-addressed file chunk.
+    FileChunk(FileChunk),
+    /// A signed file manifest (end-to-end encrypted only; contains the key).
+    FileManifest(FileManifest),
+    /// A chunk request forwarded toward DHT-closest nodes.
+    ChunkRequest(ChunkRequest),
 }
 
 impl Object {
@@ -91,6 +98,9 @@ impl Object {
             Object::HistoryResponse(response) => response.validate()?,
             Object::ChannelMessage(message) => message.validate()?,
             Object::ForumPost(post) => post.validate()?,
+            Object::FileChunk(chunk) => chunk.validate()?,
+            Object::FileManifest(manifest) => manifest.validate()?,
+            Object::ChunkRequest(request) => request.validate()?,
             _ => {}
         }
         Ok(object)

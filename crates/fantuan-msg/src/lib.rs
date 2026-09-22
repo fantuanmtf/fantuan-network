@@ -4,6 +4,7 @@
 //! signatures and strict size limits. See `docs/PROTOCOL.md` section 5.
 
 pub mod error;
+pub mod file;
 pub mod gossip;
 pub mod message;
 pub mod object;
@@ -11,6 +12,10 @@ pub mod post;
 pub mod relay;
 
 pub use error::{MsgError, Result};
+pub use file::{
+    CHUNK_DOMAIN, CHUNK_SIZE, ChunkRequest, FILE_DOMAIN, FileChunk, FileManifest, MAX_FILE_CHUNKS,
+    MAX_FILE_NAME_BYTES, MAX_FILE_SIZE, MAX_REQUEST_TTL,
+};
 pub use gossip::{Announcement, Gossip, MAX_ANNOUNCEMENTS, MAX_VOUCHES};
 pub use message::{MAX_PAYLOAD_BYTES, Message};
 pub use object::{MAX_OBJECT_BYTES, Object};

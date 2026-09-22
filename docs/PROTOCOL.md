@@ -92,7 +92,9 @@ text tag:
 | `history_request` | `HistoryRequest` (section 8) |
 | `history_response` | `HistoryResponse` (section 8) |
 | `delete_request` | `DeleteRequest` (section 8) |
-| `file_chunk` | `FileChunk` (Phase 4) |
+| `file_chunk` | `FileChunk` (section 10) |
+| `file_manifest` | `FileManifest` (section 10, relay-only) |
+| `chunk_request` | `ChunkRequest` (section 10) |
 | `ping` | monotonic uint + timestamp |
 | `pong` | echo of the ping timestamp |
 | `gossip` | descriptors + trust vouches (section 6) |
@@ -198,7 +200,34 @@ Both interfaces are local-only and are not part of the peer protocol.
   `PRIVMSG #channel :text` publishes a channel message; stored channel
   events are broadcast to every IRC client that joined the channel.
 
-## 10. Failure handling
+## 10. Files
+
+```
+FileChunk    { file_id, index, hash, nonce, ciphertext, owner, signature }
+FileManifest { file_id, owner, name, size, chunk_size, chunks[], key, created, signature }
+ChunkRequest { file_id, index, hash, requester, ttl }
+```
+
+- Publishing splits the plaintext into 32 KiB chunks, encrypts each with
+  ChaCha20-Poly1305 under a random per-file key using associated data
+  `file_id || index`, and content-addresses the ciphertext with BLAKE3.
+- The owner signs each chunk over
+  `"fantuan-chunk-v1" || owner || file_id || index || hash` and signs the
+  manifest over its canonical body (`"fantuan-file-v1"`).
+- The manifest carries the file key. It is **never** sent as a plain object:
+  direct `file_manifest` messages are ignored, and manifests are only
+  accepted inside a relay envelope, encrypted to the recipient.
+- Chunks are flooded once (deduplicated by the cache) so connected peers
+  replicate them. Nodes only ever persist `hash -> ciphertext`.
+- Retrieval sends `ChunkRequest` with TTL 8 to the DHT-closest connected
+  peers. Nodes that have the chunk answer with the stored `file_chunk`
+  object; nodes that do not remember a reverse path `(requester, via)` and
+  forward the request one hop closer. Responses follow the reverse path back
+  to the requester, which verifies every hash and decrypts.
+- Limits: 128 MiB per file, 4096 chunks, names up to 256 bytes, chunk
+  requests forwarded at most 8 hops.
+
+## 11. Failure handling
 
 - Handshake timeout: 10 seconds.
 - Idle read timeout: 120 seconds.

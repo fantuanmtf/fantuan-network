@@ -36,6 +36,11 @@ reference-only. No code is merged from it without re-derivation and tests.
    control of the local node and must never be exposed to a network.
 10. Deletes are only honoured when signed by the same key that created the
     target object.
+11. Storage nodes only ever persist `BLAKE3(ciphertext) -> ciphertext`; file
+    keys travel exclusively inside relay envelopes encrypted to the
+    recipient, and the cache has an explicit byte budget.
+12. Chunks are verified against their owner signature and embedded hash
+    before they are stored or forwarded.
 
 ## 3. Key handling
 
@@ -58,6 +63,9 @@ reference-only. No code is merged from it without re-derivation and tests.
   bounded but not differentially private.
 - History is served from the local store with a per-request cap; there is no
   global consistency guarantee between peers.
+- File replication is best-effort flooding: there is no erasure coding, no
+  repair of lost chunks and no incentive for nodes to keep data. Retrieval
+  fails if every holder goes offline.
 - Trust scoring uses locally stored vouches; revoked or stale vouches are not
   yet expired automatically.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake

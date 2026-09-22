@@ -28,7 +28,7 @@ depend on layers below it, plus `fantuan-core` for shared primitives.
 | `fantuan-transport` | Transport | core | Phase 1 |
 | `fantuan-sim` | analysis | — | Phase 0 |
 | `fantuan-node` | Node | all above | Phase 1 |
-| `fantuan-storage` | Storage | core | Phase 4 |
+| `fantuan-storage` | Storage | core, msg | Phase 4 |
 | `fantuan-anon` | Anonymous | core, msg | Phase 5 |
 | `fantuan-traffic` | Anonymous | core | Phase 5 |
 | `fantuan-client` | Application | core (control protocol) | Phase 3 |
@@ -68,6 +68,11 @@ Crates are added when their phase starts; no placeholder crates are kept.
    encrypted to the destination's OpenPGP subkey; every hop verifies the
    origin's signature and admission state, then forwards one hop closer.
    Routing tables are learned from gossip (`destination -> next hop`).
+10. **Content-addressed storage.** Files are split and encrypted locally;
+    nodes store only `BLAKE3(ciphertext) -> ciphertext` in a redb cache with
+    a byte budget. Manifests (which carry the file key) travel only inside
+    relay envelopes. Chunk requests are TTL-bound and routed toward the
+    Kademlia-closest connected peers with a reverse path for responses.
 
 ## 4. Data flow (Phase 1)
 

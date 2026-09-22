@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 3 complete.
+Status: Phase 4 complete.
 
 ## 1. Strategy
 
@@ -86,12 +86,21 @@ delivered through history sync on reconnect
 (`crates/fantuan-node/tests/control_api.rs`, `tests/irc_bridge.rs`,
 `tests/offline_history.rs`).
 
-### Phase 4 — Distributed storage
-Content-addressed chunks (BLAKE3, ChaCha20-Poly1305, owner signature),
-cache (`redb`), Kademlia DHT, replication.
+### Phase 4 — Distributed storage (done)
+1. `fantuan-storage`: chunking, ChaCha20-Poly1305 encryption, content
+   addressing and assembly; signed manifests; redb chunk cache with a byte
+   budget; simplified Kademlia routing table; closest-node replication
+   policy.
+2. `fantuan-msg`: `FileChunk`, `FileManifest` and `ChunkRequest` objects.
+3. Node: verified chunk ingest with one-shot flooding, TTL-bound chunk
+   requests with reverse-path routing to DHT-closest peers, manifest delivery
+   through relay envelopes, and `file_put` / `file_get` / `files` control
+   commands.
 
-Exit: publish and retrieve a file across three nodes; nodes see only hashes
-and ciphertext.
+Exit met: A publishes a 100 KiB file addressed to C, chunks replicate to B
+and C, Alice's and Carol's caches are cleared, and Carol retrieves the exact
+bytes from B while stored data never contains plaintext
+(`crates/fantuan-node/tests/file_transfer.rs`).
 
 ### Phase 5 — Anonymous layer
 DC-Net (mesh baseline), scheduler, malicious detection and reputation

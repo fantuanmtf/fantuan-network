@@ -39,6 +39,23 @@ pub struct StoredPost {
     pub object: Vec<u8>,
 }
 
+/// One stored file manifest.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredManifest {
+    /// File id.
+    pub file_id: Vec<u8>,
+    /// Owner fingerprint.
+    pub owner: String,
+    /// File name.
+    pub name: String,
+    /// Plaintext size.
+    pub size: u64,
+    /// Canonical `Object::FileManifest` bytes.
+    pub manifest: Vec<u8>,
+    /// Unix seconds when received.
+    pub received_at: u64,
+}
+
 /// SQLite-backed message store.
 pub struct MessageStore {
     conn: Connection,
@@ -84,7 +101,15 @@ impl MessageStore {
                  object     BLOB NOT NULL
              );
              CREATE INDEX IF NOT EXISTS idx_forum_post_topic
-                 ON forum_post(board, timestamp);",
+                 ON forum_post(board, timestamp);
+             CREATE TABLE IF NOT EXISTS file_manifest (
+                 file_id     BLOB PRIMARY KEY,
+                 owner       TEXT NOT NULL,
+                 name        TEXT NOT NULL,
+                 size        INTEGER NOT NULL,
+                 manifest    BLOB NOT NULL,
+                 received_at INTEGER NOT NULL
+             );",
         )?;
         Ok(())
     }
@@ -211,6 +236,64 @@ impl MessageStore {
             .execute("DELETE FROM forum_post WHERE id = ?1", params![id])?;
         Ok(channel + forum > 0)
     }
+
+    /// Insert a file manifest; returns false when it already exists.
+    #[allow(clippy::too_many_arguments)]
+    pub fn insert_manifest(
+        &self,
+        file_id: &[u8],
+        owner: &str,
+        name: &str,
+        size: u64,
+        manifest: &[u8],
+        received_at: u64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT OR IGNORE INTO file_manifest
+                 (file_id, owner, name, size, manifest, received_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                file_id,
+                owner,
+                name,
+                size as i64,
+                manifest,
+                received_at as i64
+            ],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Fetch a stored manifest by file id.
+    pub fn manifest(&self, file_id: &[u8]) -> Result<Option<Vec<u8>>> {
+        self.conn
+            .query_row(
+                "SELECT manifest FROM file_manifest WHERE file_id = ?1",
+                params![file_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// List stored manifests, newest first.
+    pub fn manifests(&self, limit: usize) -> Result<Vec<StoredManifest>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT file_id, owner, name, size, manifest, received_at
+             FROM file_manifest ORDER BY received_at DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit as i64], |row| {
+            Ok(StoredManifest {
+                file_id: row.get(0)?,
+                owner: row.get(1)?,
+                name: row.get(2)?,
+                size: row.get::<_, i64>(3)? as u64,
+                manifest: row.get(4)?,
+                received_at: row.get::<_, i64>(5)? as u64,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
 }
 
 /// Object ids are BLAKE3 over the canonical object bytes.
@@ -283,5 +366,28 @@ mod tests {
         }
         let store = MessageStore::open(&path).unwrap();
         assert_eq!(store.channel_messages("#g", 0, 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn manifests_roundtrip_and_dedup() {
+        let store = MessageStore::in_memory().unwrap();
+        assert!(
+            store
+                .insert_manifest(b"file-id", "OWNER", "secret.bin", 10, b"manifest", 5)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .insert_manifest(b"file-id", "OWNER", "secret.bin", 10, b"manifest", 5)
+                .unwrap()
+        );
+        assert_eq!(
+            store.manifest(b"file-id").unwrap().as_deref(),
+            Some(&b"manifest"[..])
+        );
+        let manifests = store.manifests(10).unwrap();
+        assert_eq!(manifests.len(), 1);
+        assert_eq!(manifests[0].name, "secret.bin");
+        assert_eq!(manifests[0].size, 10);
     }
 }
