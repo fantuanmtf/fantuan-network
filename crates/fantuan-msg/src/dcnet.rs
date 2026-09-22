@@ -18,6 +18,8 @@ pub const DCNET_MAX_PARTICIPANTS: usize = 16;
 pub const DCNET_PAYLOAD_LEN: usize = 1024;
 /// Maximum payload length accepted.
 pub const DCNET_MAX_PAYLOAD_LEN: usize = 4096;
+/// Minimum payload length: the frame header (`u32` length + 32-byte checksum).
+pub const DCNET_MIN_PAYLOAD_LEN: usize = 36;
 /// Maximum round deadline in seconds.
 pub const DCNET_MAX_DEADLINE_SECS: u64 = 30;
 
@@ -95,7 +97,7 @@ impl DcRoundStart {
             ));
         }
         let payload_len = self.payload_len as usize;
-        if !(36..=DCNET_MAX_PAYLOAD_LEN).contains(&payload_len) {
+        if !(DCNET_MIN_PAYLOAD_LEN..=DCNET_MAX_PAYLOAD_LEN).contains(&payload_len) {
             return Err(MsgError::TooLarge(
                 "round payload length out of range".to_string(),
             ));

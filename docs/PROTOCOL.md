@@ -266,10 +266,58 @@ ChunkRequest { file_id, index, hash, requester, ttl }
 
 ## 11. DC-Net rounds and traffic shaping
 
+### 11.1 Round identity and context (v2)
+
+Every round instance is identified by a triple and described by a context.
+Identities inside both are protocol identities (`proto_id`, section 2), never
+OpenPGP fingerprints.
+
+```
+RoundIdentity = (initiator, epoch, instance)
+    initiator : proto_id, 32 raw bytes
+    epoch     : u64, initiator-scoped, strictly increasing, never reused
+    instance  : 16 raw bytes from the OS CSPRNG; never derived from a clock,
+                a counter or persisted state
+
+RoundContext  = (version, channel, declared_set, deadline_secs, payload_len)
+    version       : u8, currently 2
+    channel       : text, validated by the channel rules in section 8
+    declared_set  : 2..=16 proto_ids, strictly ascending by raw bytes, no
+                    duplicates (a duplicate is malformed and MUST be rejected,
+                    never silently merged)
+    deadline_secs : 1..=30
+    payload_len   : 36..=4096 bytes
+
+CH        = u32(len, BE) ‖ UTF-8 bytes
+SET       = u32(count, BE) ‖ count × 32B, ascending
+CTX_BYTES = u8(version) ‖ CH ‖ SET ‖ u64(deadline_secs, BE) ‖ u32(payload_len, BE)
+CTXH      = BLAKE3("fantuan-round-context-v1" ‖ CTX_BYTES)          // 32 bytes
+identity  = initiator(32B) ‖ u64(epoch, BE) ‖ instance(16B)
+```
+
+Rules that follow from the layout, all required:
+
+- Every integer is big endian; the only length prefixes are the one on `CH`.
+- Two contexts with identical fields MUST produce identical `CTX_BYTES` and
+  therefore identical `CTXH`; a difference in any field MUST change both.
+- A context that is decoded from the wire MUST already be canonical: an
+  unsorted or duplicated declared set is rejected rather than reordered, so
+  two decoders can never disagree about the bytes a context hashes.
+- `CTXH` is what share signatures, ACK signatures and key derivation bind
+  (sections 11.3 onward), so an object from one context can never be
+  transplanted into another context that shares the same `RoundIdentity`.
+
+The version-1 wire objects, still in force until the remaining parts of this
+section are rewritten, are:
+
 ```
 DcRoundStart { channel, round_id, initiator, participants[], deadline_secs, payload_len }
 DcRoundShare { channel, round_id, peer_uid, xored_payload, signature }
 ```
+
+Version 2 replaces `round_id` with `RoundIdentity`, replaces the
+`channel`/`participants` strings with a `RoundContext`, and makes the start and
+share signatures cover the layouts above.
 
 - Underlying key: each participant derives a pairwise block from
   `ECDH(static_a, static_b)` with the node's Noise X25519 keys, expanded via

@@ -11,10 +11,12 @@ pub mod message;
 pub mod object;
 pub mod post;
 pub mod relay;
+pub mod round;
 
 pub use dcnet::{
-    DCNET_MAX_DEADLINE_SECS, DCNET_MAX_PARTICIPANTS, DCNET_MAX_PAYLOAD_LEN, DCNET_PAYLOAD_LEN,
-    DCNET_SHARE_DOMAIN, DcRoundShare, DcRoundStart, pad_message, share_message, unpad_message,
+    DCNET_MAX_DEADLINE_SECS, DCNET_MAX_PARTICIPANTS, DCNET_MAX_PAYLOAD_LEN, DCNET_MIN_PAYLOAD_LEN,
+    DCNET_PAYLOAD_LEN, DCNET_SHARE_DOMAIN, DcRoundShare, DcRoundStart, pad_message, share_message,
+    unpad_message,
 };
 pub use error::{MsgError, Result};
 pub use file::{
@@ -30,3 +32,7 @@ pub use post::{
     MAX_HISTORY_POSTS, MAX_TOPIC_BYTES, valid_topic,
 };
 pub use relay::{RELAY_MAX_AGE_SECS, RELAY_MAX_HOPS, Relay};
+pub use round::{
+    CONTEXT_HASH_DOMAIN, CONTEXT_HASH_LEN, DCNET_MIN_PARTICIPANTS, INSTANCE_LEN,
+    ROUND_CONTEXT_VERSION, RoundContext, RoundIdentity,
+};
