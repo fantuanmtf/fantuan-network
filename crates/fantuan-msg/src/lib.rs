@@ -3,6 +3,7 @@
 //! Canonical CBOR encoding of application objects, detached OpenPGP
 //! signatures and strict size limits. See `docs/PROTOCOL.md` section 5.
 
+pub mod dcnet;
 pub mod error;
 pub mod file;
 pub mod gossip;
@@ -11,6 +12,10 @@ pub mod object;
 pub mod post;
 pub mod relay;
 
+pub use dcnet::{
+    DCNET_MAX_DEADLINE_SECS, DCNET_MAX_PARTICIPANTS, DCNET_MAX_PAYLOAD_LEN, DCNET_PAYLOAD_LEN,
+    DCNET_SHARE_DOMAIN, DcRoundShare, DcRoundStart, pad_message, share_message, unpad_message,
+};
 pub use error::{MsgError, Result};
 pub use file::{
     CHUNK_DOMAIN, CHUNK_SIZE, ChunkRequest, FILE_DOMAIN, FileChunk, FileManifest, MAX_FILE_CHUNKS,

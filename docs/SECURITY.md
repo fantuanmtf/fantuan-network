@@ -41,6 +41,12 @@ reference-only. No code is merged from it without re-derivation and tests.
     recipient, and the cache has an explicit byte budget.
 12. Chunks are verified against their owner signature and embedded hash
     before they are stored or forwarded.
+13. DC-Net shares are derived from pairwise X25519 secrets and signed; an
+    observer without any pair key learns nothing about the sender, and shares
+    from unknown signers are rejected.
+14. Shaped connections pad every frame to a fixed bucket and blend cover
+    frames, so message length and exact send timing are not observable at the
+    frame layer.
 
 ## 3. Key handling
 
@@ -66,6 +72,13 @@ reference-only. No code is merged from it without re-derivation and tests.
 - File replication is best-effort flooding: there is no erasure coding, no
   repair of lost chunks and no incentive for nodes to keep data. Retrieval
   fails if every holder goes offline.
+- DC-Net rounds require a direct full mesh between participants; shares are
+  not relayed, so round size is bounded by direct connectivity.
+- Traffic shaping is mix-lite (padding buckets plus cover); a global passive
+  adversary can still correlate long-term traffic volumes and cover traffic
+  is not yet rate-adaptive. A full mixnet is future work.
+- Round participation and timing metadata remain visible to connected peers;
+  only the sender of an extracted message is hidden.
 - Trust scoring uses locally stored vouches; revoked or stale vouches are not
   yet expired automatically.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake

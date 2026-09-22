@@ -39,6 +39,10 @@ enum Request {
         to: String,
         text: String,
     },
+    Anon {
+        channel: String,
+        text: String,
+    },
     FilePut {
         path: String,
         to: Option<String>,
@@ -221,6 +225,10 @@ async fn dispatch(state: &Arc<NodeState>, request: Request) -> Value {
                 Err(error) => json!({"ok": false, "error": error.to_string()}),
             }
         }
+        Request::Anon { channel, text } => match crate::anon::queue(state, &channel, &text) {
+            Ok(()) => json!({"ok": true, "queued": true}),
+            Err(error) => json!({"ok": false, "error": error.to_string()}),
+        },
         Request::FilePut { path, to } => {
             match crate::files::publish_file(state, std::path::Path::new(&path), to.as_deref()) {
                 Ok(file_id) => json!({"ok": true, "file_id": file_id}),

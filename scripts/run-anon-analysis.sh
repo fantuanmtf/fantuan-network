@@ -4,7 +4,7 @@
 # Usage: scripts/run-anon-analysis.sh <scenario> [seed]
 set -euo pipefail
 
-SCENARIO="${1:-dcnet-3}"
+SCENARIO="${1:-dcnet-mesh}"
 SEED="${2:-1}"
 OUT_DIR="${OUT_DIR:-reports}"
 JSON="${OUT_DIR}/sim-${SCENARIO}-${SEED}.json"

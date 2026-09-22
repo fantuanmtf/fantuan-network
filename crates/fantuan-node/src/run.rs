@@ -86,6 +86,17 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
                     size,
                     &file_id[..16.min(file_id.len())]
                 ),
+                NodeEvent::Anonymous {
+                    channel,
+                    text,
+                    round_id,
+                } => println!("[{channel}] anonymous #{round_id}: {text}"),
+                NodeEvent::PeerEvicted { fingerprint } => {
+                    println!(
+                        "[anon] evicted {} after repeated dropouts",
+                        short(&fingerprint)
+                    );
+                }
             }
         }
     });
@@ -116,6 +127,48 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
         tokio::spawn(async move {
             if let Err(error) = crate::irc::serve(irc_state, &addr, irc_shutdown).await {
                 tracing::warn!("IRC bridge ended: {error:#}");
+            }
+        });
+    }
+
+    // DC-Net scheduler.
+    let anon_state = state.clone();
+    let mut anon_shutdown = shutdown_rx.clone();
+    let round_interval = Duration::from_secs(config.round_interval_secs.max(1));
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(round_interval);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                _ = anon_shutdown.changed() => break,
+                _ = ticker.tick() => {
+                    if let Err(error) = crate::anon::tick(&anon_state) {
+                        tracing::warn!("anonymous scheduler tick failed: {error:#}");
+                    }
+                }
+            }
+        }
+    });
+
+    // Cover traffic.
+    if config.traffic_shaping {
+        let cover_state = state.clone();
+        let mut cover_shutdown = shutdown_rx.clone();
+        let cover_interval = Duration::from_secs(config.cover_interval_secs.max(1));
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(cover_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = cover_shutdown.changed() => break,
+                    _ = ticker.tick() => {
+                        let peers = cover_state.pool.peers();
+                        for peer in peers {
+                            let frame = fantuan_traffic::cover_frame(fantuan_traffic::BUCKETS[2]);
+                            let _ = cover_state.pool.try_send(&peer, frame);
+                        }
+                    }
+                }
             }
         });
     }

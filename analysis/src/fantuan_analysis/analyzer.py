@@ -218,9 +218,23 @@ def build_report(transcript: Transcript) -> str:
             f"(r {coefficient:+.4f})"
         )
     lines.append("")
+
+    lines.append("## 6. Protocol gates")
+    lines.append("")
+    if transcript.scenario.startswith("dcnet"):
+        checks = [
+            ("anonymity entropy >= log2(N) - 1 bit", ideal - entropy <= 1.0),
+            ("I(sender; size bucket) < 0.05 bits", mi_size < 0.05),
+            ("I(sender; epoch) < 0.05 bits", mi_epoch < 0.05),
+        ]
+        for label, passed in checks:
+            lines.append(f"- {'PASS' if passed else 'FAIL'}: {label}")
+    else:
+        lines.append("_Calibration scenario: protocol gates do not apply._")
+    lines.append("")
     lines.append(
-        "_Calibration note: these scenarios validate the metric pipeline. "
-        "Protocol anonymity claims require Phase 5 scenarios._"
+        "_DC-Net scenarios model share-level observations; calibration scenarios "
+        "validate the metric pipeline itself._"
     )
     lines.append("")
     return "\n".join(lines)

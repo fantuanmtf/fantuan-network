@@ -5,6 +5,7 @@
 //! size limit and canonical re-encoding, so unknown fields, duplicate keys
 //! and trailing bytes are rejected.
 
+use crate::dcnet::{DcRoundShare, DcRoundStart};
 use crate::error::{MsgError, Result};
 use crate::file::{ChunkRequest, FileChunk, FileManifest};
 use crate::gossip::Gossip;
@@ -54,6 +55,10 @@ pub enum Object {
     FileManifest(FileManifest),
     /// A chunk request forwarded toward DHT-closest nodes.
     ChunkRequest(ChunkRequest),
+    /// DC-Net round announcement.
+    DcRoundStart(DcRoundStart),
+    /// DC-Net XOR share.
+    DcRoundShare(DcRoundShare),
 }
 
 impl Object {
@@ -101,6 +106,8 @@ impl Object {
             Object::FileChunk(chunk) => chunk.validate()?,
             Object::FileManifest(manifest) => manifest.validate()?,
             Object::ChunkRequest(request) => request.validate()?,
+            Object::DcRoundStart(start) => start.validate()?,
+            Object::DcRoundShare(share) => share.validate()?,
             _ => {}
         }
         Ok(object)

@@ -14,5 +14,7 @@ pub mod transcript;
 pub use clock::{EventQueue, LogicalTime, VirtualClock};
 pub use error::{Result, SimError};
 pub use rng::DeterministicRng;
-pub use scenario::{CALIBRATION_TIMED, CALIBRATION_UNIFORM, Simulation, run};
+pub use scenario::{
+    CALIBRATION_TIMED, CALIBRATION_UNIFORM, DCNET_COVER, DCNET_MESH, Simulation, run,
+};
 pub use transcript::{Observation, Transcript};

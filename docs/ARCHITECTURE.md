@@ -29,8 +29,8 @@ depend on layers below it, plus `fantuan-core` for shared primitives.
 | `fantuan-sim` | analysis | — | Phase 0 |
 | `fantuan-node` | Node | all above | Phase 1 |
 | `fantuan-storage` | Storage | core, msg | Phase 4 |
-| `fantuan-anon` | Anonymous | core, msg | Phase 5 |
-| `fantuan-traffic` | Anonymous | core | Phase 5 |
+| `fantuan-anon` | Anonymous | core, identity, msg | Phase 5 |
+| `fantuan-traffic` | Anonymous | — | Phase 5 |
 | `fantuan-client` | Application | core (control protocol) | Phase 3 |
 
 Crates are added when their phase starts; no placeholder crates are kept.
@@ -73,6 +73,14 @@ Crates are added when their phase starts; no placeholder crates are kept.
     a byte budget. Manifests (which carry the file key) travel only inside
     relay envelopes. Chunk requests are TTL-bound and routed toward the
     Kademlia-closest connected peers with a reverse path for responses.
+11. **Mesh DC-Net rounds.** Pairwise share keys come from the Noise X25519
+    static keys, so no extra out-of-band exchange is needed. The initiator's
+    message share is broadcast last; all shares are signed and verified
+    against certificates. Dropouts are penalized and evicted after three
+    strikes.
+12. **Traffic shaping.** Shaped connections pad every frame into fixed
+    buckets, send cover frames, batch by epoch and apply bounded jitter
+    (mix-lite). Full mixnet cells and layered routing are future work.
 
 ## 4. Data flow (Phase 1)
 

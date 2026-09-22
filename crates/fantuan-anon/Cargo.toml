@@ -1,0 +1,24 @@
+[package]
+name = "fantuan-anon"
+description = "DC-Net anonymous rounds: shares, collectors, mesh driver, reputation"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+fantuan-core.workspace = true
+fantuan-identity.workspace = true
+fantuan-msg.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+blake3.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

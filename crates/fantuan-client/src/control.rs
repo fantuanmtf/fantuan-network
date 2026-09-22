@@ -118,6 +118,31 @@ pub enum Event {
         /// Origin fingerprint.
         from: String,
     },
+    /// A file became available.
+    FileAvailable {
+        /// File id (hex).
+        file_id: String,
+        /// File name.
+        name: String,
+        /// Plaintext size.
+        size: u64,
+        /// Sender fingerprint.
+        from: String,
+    },
+    /// An anonymous DC-Net message.
+    Anonymous {
+        /// Channel label.
+        channel: String,
+        /// Extracted text.
+        text: String,
+        /// Round id.
+        round_id: u64,
+    },
+    /// A peer was evicted from DC-Net rounds.
+    PeerEvicted {
+        /// Evicted fingerprint.
+        fingerprint: String,
+    },
 }
 
 /// Control socket client.
@@ -203,6 +228,13 @@ impl ControlClient {
     /// Send an end-to-end encrypted direct message.
     pub async fn send(&mut self, to: &str, text: &str) -> Result<()> {
         self.request(json!({"cmd": "send", "to": to, "text": text}))
+            .await?;
+        Ok(())
+    }
+
+    /// Queue an anonymous DC-Net message for the next round.
+    pub async fn anon_post(&mut self, channel: &str, text: &str) -> Result<()> {
+        self.request(json!({"cmd": "anon", "channel": channel, "text": text}))
             .await?;
         Ok(())
     }

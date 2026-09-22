@@ -14,12 +14,13 @@ Transport (I2P Tunnel / Noise / Session Manager)
 Network Node (Peer Discovery / Routing / Relay)
 ```
 
-**Status:** Phase 4 complete — OpenPGP identity and descriptors, CBOR message
+**Status:** Phase 5 complete — OpenPGP identity and descriptors, CBOR message
 envelope, I2P SAM v3 + Noise sessions with identity binding, signed trust
 graph, gossip discovery, end-to-end encrypted relay routing, channels and
 forums with offline history sync, content-addressed encrypted file storage
-with chunk replication, a TUI client, a local IRC bridge, and the offline
-simulation/analysis pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+with chunk replication, DC-Net anonymous rounds with padding/cover traffic,
+a TUI client, a local IRC bridge, and the offline simulation/analysis
+pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ## Repository layout
 

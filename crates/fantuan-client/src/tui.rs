@@ -151,6 +151,40 @@ async fn event_loop(
                     Ok(Event::Relay { from }) => {
                         app.status = format!("relay delivered from {}", short(&from));
                     }
+                    Ok(Event::FileAvailable {
+                        file_id,
+                        name,
+                        size,
+                        from,
+                    }) => {
+                        app.push(
+                            "files",
+                            DisplayLine {
+                                from: short(&from).to_string(),
+                                timestamp: 0,
+                                text: format!("{name} ({size} bytes) {file_id}"),
+                            },
+                        );
+                        app.status = format!("file available: {name}");
+                    }
+                    Ok(Event::Anonymous {
+                        channel,
+                        text,
+                        round_id,
+                    }) => {
+                        app.push(
+                            &channel,
+                            DisplayLine {
+                                from: format!("anon#{round_id}"),
+                                timestamp: 0,
+                                text,
+                            },
+                        );
+                        app.status = format!("anonymous message in {channel}");
+                    }
+                    Ok(Event::PeerEvicted { fingerprint }) => {
+                        app.status = format!("evicted {} from rounds", short(&fingerprint));
+                    }
                     Err(error) => {
                         app.status = format!("event stream ended: {error}");
                         break;
@@ -207,6 +241,21 @@ async fn submit(input: &str, app: &mut App, client: &mut ControlClient) -> Resul
                 }
             }
             "read" => refresh(client, app).await,
+            "anon" => {
+                let mut rest = parts;
+                match rest.next() {
+                    Some(text) => {
+                        let channel = app.current_channel();
+                        match client.anon_post(&channel, text.trim()).await {
+                            Ok(()) => {
+                                app.status = format!("anonymous message queued for {channel}")
+                            }
+                            Err(error) => app.status = format!("anon failed: {error}"),
+                        }
+                    }
+                    None => app.status = "usage: /anon <text>".to_string(),
+                }
+            }
             "peers" => {
                 let peers = client.peers().await?;
                 app.peers = peers.len();

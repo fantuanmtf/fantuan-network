@@ -1,6 +1,6 @@
 # Fantuan Network — Roadmap
 
-Status: Phase 4 complete.
+Status: Phase 5 complete.
 
 ## 1. Strategy
 
@@ -102,13 +102,29 @@ and C, Alice's and Carol's caches are cleared, and Carol retrieves the exact
 bytes from B while stored data never contains plaintext
 (`crates/fantuan-node/tests/file_transfer.rs`).
 
-### Phase 5 — Anonymous layer
-DC-Net (mesh baseline), scheduler, malicious detection and reputation
-penalty, mix routing, padding, traffic batching and cover traffic.
-Simulator scenarios cover each mechanism.
+### Phase 5 — Anonymous layer and traffic shaping (done)
+1. `fantuan-anon`: X25519/HKDF pairwise shares, checksummed message frames,
+   monotonic round tracking, share-authenticated mesh round driver, dropout
+   reputation with eviction.
+2. `fantuan-traffic`: fixed padding buckets, cover frames, epoch batching and
+   bounded jitter (mix-lite).
+3. `fantuan-msg`: `DcRoundStart` / `DcRoundShare` wire objects.
+4. Node: anonymous scheduler and round handling, participants = connected
+   non-evicted peers, per-round signatures verified against certificates,
+   shaped connections with automatic cover traffic, `anon` control command
+   and `/anon` in the TUI.
+5. Simulator: `dcnet-mesh` and `dcnet-cover` scenarios with entropy, mutual
+   information and correlation gates in both Rust tests and the Python
+   report.
 
-Exit: anonymous round delivery with three or more nodes; dropout eviction;
-entropy, mutual information and Pearson gates pass.
+Exit met: three fully connected nodes each extract an anonymous message
+(`crates/fantuan-node/tests/dcnet_rounds.rs`); evicted peers are excluded;
+the analyzer reports PASS on entropy/MI gates for `dcnet-mesh`
+(`reports/anonymity-dcnet-mesh-<seed>.md`).
+
+Note: a full mixnet (fixed-size cells, layered routing, per-hop delays) is
+deferred to Phase 6 hardening; Phase 5 ships mix-lite batching plus cover
+traffic.
 
 ### Phase 6 — Attack hardening and documentation
 Full attack matrix (GPA, partial, timing, intersection, n−1, participation

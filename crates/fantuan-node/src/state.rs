@@ -6,6 +6,7 @@
 
 use crate::admission::AdmissionControl;
 use crate::store::MessageStore;
+use fantuan_anon::{ReputationTracker, RoundDriver};
 use fantuan_core::config::NodeConfig;
 use fantuan_identity::{Identity, TrustStore};
 use fantuan_storage::{ChunkCache, Contact, RoutingTable, node_id};
@@ -82,6 +83,20 @@ pub enum NodeEvent {
         /// Who sent the manifest.
         from: String,
     },
+    /// An anonymous DC-Net message was extracted.
+    Anonymous {
+        /// Channel label.
+        channel: String,
+        /// Extracted text.
+        text: String,
+        /// Round id.
+        round_id: u64,
+    },
+    /// A peer was evicted from DC-Net rounds after repeated dropouts.
+    PeerEvicted {
+        /// Evicted peer fingerprint.
+        fingerprint: String,
+    },
 }
 
 /// Topic subscriptions.
@@ -119,6 +134,10 @@ pub struct NodeState {
     pub routing: Mutex<RoutingTable>,
     /// Reverse paths for forwarded chunk requests.
     pub chunk_routes: Mutex<HashMap<[u8; 32], Vec<PendingChunkRoute>>>,
+    /// DC-Net round state machine.
+    pub rounds: Mutex<RoundDriver>,
+    /// DC-Net dropout reputation.
+    pub reputation: Mutex<ReputationTracker>,
     seen_requests: Mutex<HashMap<([u8; 32], String), Instant>>,
     event_stream: broadcast::Sender<NodeEvent>,
     relay_nonce: AtomicU64,
@@ -153,6 +172,8 @@ impl NodeState {
             chunks: Arc::new(chunks),
             routing: Mutex::new(RoutingTable::new(local_id, 20)),
             chunk_routes: Mutex::new(HashMap::new()),
+            rounds: Mutex::new(RoundDriver::new()),
+            reputation: Mutex::new(ReputationTracker::new()),
             seen_requests: Mutex::new(HashMap::new()),
             event_stream,
             relay_nonce: AtomicU64::new(0),

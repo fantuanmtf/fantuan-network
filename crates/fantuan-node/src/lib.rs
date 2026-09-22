@@ -4,6 +4,7 @@
 //! tests can drive the same code paths.
 
 pub mod admission;
+pub mod anon;
 pub mod connection;
 pub mod control;
 pub mod files;

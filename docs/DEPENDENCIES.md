@@ -34,6 +34,7 @@ dependency must be listed here with its purpose and fallback.
 | `zeroize` | secret hygiene | secrets cleared on drop |
 | `ratatui` + `crossterm` | TUI client | terminal rendering and input |
 | `redb` | chunk cache | pure-Rust embedded key/value store with a byte budget |
+| `hkdf` + `sha2` | DC-Net pair shares | RFC 5869 key expansion over X25519 secrets |
 | `chacha20poly1305` | chunk encryption | AEAD with per-chunk random nonces and AAD binding |
 | `rusqlite` | message store | channel/forum history, dedup and sync |
 | `tracing` + `tracing-subscriber` | structured logging | |

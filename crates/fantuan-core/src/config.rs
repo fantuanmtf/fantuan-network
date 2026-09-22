@@ -45,6 +45,12 @@ pub struct NodeConfig {
     pub irc_addr: Option<String>,
     /// Chunk cache byte budget.
     pub storage_max_bytes: u64,
+    /// Pad frames to fixed buckets and send cover traffic.
+    pub traffic_shaping: bool,
+    /// Seconds between DC-Net scheduler ticks.
+    pub round_interval_secs: u64,
+    /// Seconds between cover-traffic bursts.
+    pub cover_interval_secs: u64,
 }
 
 impl Default for NodeConfig {
@@ -62,6 +68,9 @@ impl Default for NodeConfig {
             control_socket: Some("control.sock".to_string()),
             irc_addr: None,
             storage_max_bytes: DEFAULT_STORAGE_MAX_BYTES,
+            traffic_shaping: true,
+            round_interval_secs: 5,
+            cover_interval_secs: 10,
         }
     }
 }

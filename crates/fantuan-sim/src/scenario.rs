@@ -18,6 +18,11 @@ use crate::transcript::{Observation, Transcript};
 pub const CALIBRATION_UNIFORM: &str = "calibration-uniform";
 /// Calibration scenario with a deliberately detectable timing pattern.
 pub const CALIBRATION_TIMED: &str = "calibration-timed";
+/// Three-party DC-Net mesh: every participant sends one equal-size share per
+/// round, so the observer cannot tell who embedded the message.
+pub const DCNET_MESH: &str = "dcnet-mesh";
+/// DC-Net mesh with additional cover traffic.
+pub const DCNET_COVER: &str = "dcnet-cover";
 
 /// Discrete-event simulation state.
 pub struct Simulation {
@@ -67,6 +72,8 @@ pub fn run(name: &str, seed: u64) -> Result<Transcript> {
     match name {
         CALIBRATION_UNIFORM => Ok(calibration_uniform(seed)),
         CALIBRATION_TIMED => Ok(calibration_timed(seed)),
+        DCNET_MESH => Ok(dcnet_mesh(seed, false)),
+        DCNET_COVER => Ok(dcnet_mesh(seed, true)),
         other => Err(SimError::UnknownScenario(other.to_string())),
     }
 }
@@ -158,10 +165,65 @@ fn calibration_timed(seed: u64) -> Transcript {
     simulation.run()
 }
 
+/// Three-party DC-Net mesh.
+///
+/// Every participant emits exactly one equal-size share per round; the
+/// embedded message is indistinguishable from the shares. With `cover` the
+/// scenario adds uniform cover frames on top.
+fn dcnet_mesh(seed: u64, cover: bool) -> Transcript {
+    let senders = vec!["alice".to_string(), "bob".to_string(), "carol".to_string()];
+    let duration_ms = 60_000;
+    let round_interval_ms = 1000;
+    let payload_len = 256u64;
+    let scenario = if cover { DCNET_COVER } else { DCNET_MESH };
+    let mut simulation = Simulation::new(scenario, seed, senders.clone(), duration_ms);
+
+    let rounds = duration_ms / round_interval_ms;
+    for round in 0..rounds {
+        for sender in &senders {
+            let at_ms = round * round_interval_ms + simulation.rng.below(20);
+            simulation.schedule(
+                at_ms,
+                Observation {
+                    at_ms,
+                    sender: sender.clone(),
+                    receiver: "broadcast".to_string(),
+                    size_bytes: payload_len,
+                    round_id: Some(round),
+                    participants: senders.clone(),
+                    cover: false,
+                },
+            );
+        }
+    }
+
+    if cover {
+        for _ in 0..rounds * 2 {
+            let at_ms = simulation.rng.below(duration_ms);
+            let sender = senders[simulation.rng.below(senders.len() as u64) as usize].clone();
+            simulation.schedule(
+                at_ms,
+                Observation {
+                    at_ms,
+                    sender,
+                    receiver: "broadcast".to_string(),
+                    size_bytes: payload_len,
+                    round_id: None,
+                    participants: Vec::new(),
+                    cover: true,
+                },
+            );
+        }
+    }
+    simulation.run()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::metrics::{coefficient_of_variation, entropy_from_counts};
+    use crate::metrics::{
+        coefficient_of_variation, entropy_from_counts, mutual_information, pearson,
+    };
 
     fn intervals(transcript: &Transcript, sender: &str) -> Vec<f64> {
         let mut times: Vec<u64> = transcript
@@ -233,5 +295,79 @@ mod tests {
         assert!(transcript.observations.len() == 800);
         // The whole simulated minute must run in well under a second.
         assert!(start.elapsed().as_secs() < 5);
+    }
+
+    #[test]
+    fn dcnet_mesh_has_ideal_entropy_and_zero_mutual_information() {
+        let transcript = run(DCNET_MESH, 3).expect("run");
+        let counts: Vec<u64> = transcript
+            .sender_counts()
+            .into_iter()
+            .map(|(_, count)| count)
+            .collect();
+        assert_eq!(counts, vec![60, 60, 60]);
+        let entropy = entropy_from_counts(&counts);
+        let ideal = 3f64.log2();
+        assert!(
+            (entropy - ideal).abs() < 1e-12,
+            "entropy {entropy} should equal log2(3) = {ideal}"
+        );
+
+        // Share size carries no sender information.
+        let index: Vec<&str> = transcript.senders.iter().map(String::as_str).collect();
+        let pairs: Vec<(usize, usize)> = transcript
+            .observations
+            .iter()
+            .filter(|observation| !observation.cover)
+            .map(|observation| {
+                let sender = index
+                    .iter()
+                    .position(|uid| *uid == observation.sender)
+                    .unwrap_or(0);
+                (sender, 0)
+            })
+            .collect();
+        assert!(
+            mutual_information(&pairs).abs() < 1e-12,
+            "size must not identify the sender"
+        );
+    }
+
+    #[test]
+    fn dcnet_participants_are_timing_indistinguishable() {
+        let transcript = run(DCNET_MESH, 5).expect("run");
+        let series = transcript.epoch_series(1000);
+        let reference: Vec<f64> = (0..series["alice"].len())
+            .map(|epoch| series["alice"][epoch] + series["bob"][epoch] + series["carol"][epoch])
+            .collect();
+        let alice = pearson(&series["alice"], &reference).expect("alice correlation");
+        let bob = pearson(&series["bob"], &reference).expect("bob correlation");
+        let carol = pearson(&series["carol"], &reference).expect("carol correlation");
+        assert!((alice - bob).abs() < 1e-9, "alice {alice} vs bob {bob}");
+        assert!((bob - carol).abs() < 1e-9, "bob {bob} vs carol {carol}");
+        // All participants follow the same cadence.
+        assert!((alice - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn cover_traffic_is_present_and_blended() {
+        let plain = run(DCNET_MESH, 7).expect("plain");
+        let covered = run(DCNET_COVER, 7).expect("covered");
+        let cover_count = covered
+            .observations
+            .iter()
+            .filter(|observation| observation.cover)
+            .count();
+        assert_eq!(cover_count, 120);
+        assert_eq!(covered.observations.len(), plain.observations.len() + 120);
+
+        // Real shares keep their fixed size in both scenarios.
+        for observation in covered
+            .observations
+            .iter()
+            .filter(|observation| !observation.cover)
+        {
+            assert_eq!(observation.size_bytes, 256);
+        }
     }
 }

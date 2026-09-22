@@ -9,6 +9,8 @@ members = [
     "crates/fantuan-node",
     "crates/fantuan-client",
     "crates/fantuan-storage",
+    "crates/fantuan-anon",
+    "crates/fantuan-traffic",
 ]
 
 [workspace.package]
@@ -51,6 +53,8 @@ crossterm = "0.29"
 sequoia-openpgp = { version = "2.4", default-features = false, features = ["crypto-nettle"] }
 snow = "0.10"
 x25519-dalek = { version = "3", features = ["static_secrets", "getrandom"] }
+hkdf = "0.12"
+sha2 = "0.10"
 getrandom = "0.3"
 zeroize = { version = "1", features = ["derive"] }
 hex = "0.4"
@@ -71,6 +75,8 @@ fantuan-msg = { path = "crates/fantuan-msg" }
 fantuan-transport = { path = "crates/fantuan-transport" }
 fantuan-sim = { path = "crates/fantuan-sim" }
 fantuan-storage = { path = "crates/fantuan-storage" }
+fantuan-anon = { path = "crates/fantuan-anon" }
+fantuan-traffic = { path = "crates/fantuan-traffic" }
 
 # Dev
 tempfile = "3"

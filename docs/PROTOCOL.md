@@ -95,6 +95,8 @@ text tag:
 | `file_chunk` | `FileChunk` (section 10) |
 | `file_manifest` | `FileManifest` (section 10, relay-only) |
 | `chunk_request` | `ChunkRequest` (section 10) |
+| `dc_round_start` | `DcRoundStart` (section 11) |
+| `dc_round_share` | `DcRoundShare` (section 11) |
 | `ping` | monotonic uint + timestamp |
 | `pong` | echo of the ping timestamp |
 | `gossip` | descriptors + trust vouches (section 6) |
@@ -227,7 +229,54 @@ ChunkRequest { file_id, index, hash, requester, ttl }
 - Limits: 128 MiB per file, 4096 chunks, names up to 256 bytes, chunk
   requests forwarded at most 8 hops.
 
-## 11. Failure handling
+## 11. DC-Net rounds and traffic shaping
+
+```
+DcRoundStart { channel, round_id, initiator, participants[], deadline_secs, payload_len }
+DcRoundShare { channel, round_id, peer_uid, xored_payload, signature }
+```
+
+- Underlying key: each participant derives a pairwise block from
+  `ECDH(static_a, static_b)` with the node's Noise X25519 keys, expanded via
+  HKDF with `"fantuan-dcnet-pair-v1" || round_id || sorted uids`. XOR-ing all
+  pairwise blocks across participants cancels every block.
+- Rounds are a mesh: the initiator broadcasts `DcRoundStart`, every other
+  participant broadcasts one neutral share, and the initiator broadcasts its
+  message-carrying share **last** once every other share arrived. Every node
+  XORs all shares and extracts the checksummed message frame
+  (`[u32 length][BLAKE3 checksum][message][zero pad]`).
+- Round ids advance by exactly one (`+1`); far-future ids are rejected.
+  Simultaneous initiations are resolved by comparing initiator fingerprints
+  (the smaller wins; the loser aborts before sending a message share).
+- Shares are signed by the sender's OpenPGP key and verified against the
+  signer's stored certificate. Unknown signers are rejected.
+- Limits: 2..=16 participants, payload length 36..=4096 bytes, deadline
+  ≤ 30 s. Messages longer than `payload_len - 36` are refused.
+- Rounds require direct connectivity between all participants (mesh); the
+  scheduler only selects currently connected, non-evicted peers.
+- Expired rounds with missing shares report the missing participants; three
+  strikes evict a peer from future rounds until reinstated.
+
+### Traffic shaping
+
+Every frame sent by a shaped connection is padded into one of the buckets
+`256, 512, 1024, 2048, 4096, 8192` bytes:
+
+```
+[0x01][u32 original length][original bytes][random fill]   padded frame
+[0x02][random bytes]                                       cover frame
+<anything else>                                            raw frame
+```
+
+- Receivers discard cover frames and unwrap padded frames; raw frames are
+  accepted for compatibility with direct one-shot sends.
+- Cover traffic is generated once per cover interval toward every connected
+  peer; it is indistinguishable from padded data at the frame level.
+- Epoch batching (10 s) and bounded jitter (≤ 250 ms) further blur send
+  timing. This is a mix-lite approximation; a full mixnet remains future
+  work.
+
+## 12. Failure handling
 
 - Handshake timeout: 10 seconds.
 - Idle read timeout: 120 seconds.

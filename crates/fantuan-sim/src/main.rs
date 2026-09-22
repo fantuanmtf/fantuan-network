@@ -76,6 +76,8 @@ fn main() {
         Command::List => {
             println!("{}", fantuan_sim::CALIBRATION_UNIFORM);
             println!("{}", fantuan_sim::CALIBRATION_TIMED);
+            println!("{}", fantuan_sim::DCNET_MESH);
+            println!("{}", fantuan_sim::DCNET_COVER);
         }
     }
 }

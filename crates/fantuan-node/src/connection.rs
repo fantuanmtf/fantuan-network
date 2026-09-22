@@ -61,17 +61,27 @@ where
     let result = loop {
         tokio::select! {
             incoming = tokio::time::timeout(idle, peer.session.recv(&mut stream)) => match incoming {
-                Ok(Ok(bytes)) => {
-                    if let Err(error) = handle_object(&state, &mut peer, &mut stream, &bytes).await {
-                        break Err(error);
+                Ok(Ok(bytes)) => match fantuan_traffic::parse(&bytes) {
+                    fantuan_traffic::Frame::Data(payload)
+                    | fantuan_traffic::Frame::Raw(payload) => {
+                        if let Err(error) = handle_object(&state, &mut peer, &mut stream, payload).await {
+                            break Err(error);
+                        }
                     }
-                }
+                    fantuan_traffic::Frame::Cover => {
+                        tracing::trace!("cover frame discarded");
+                    }
+                    fantuan_traffic::Frame::Invalid => {
+                        tracing::debug!("invalid shaped frame dropped");
+                    }
+                },
                 Ok(Err(error)) => break Err(error.into()),
                 Err(_) => break Err(anyhow!("peer idle timeout")),
             },
             outgoing = outbound.recv() => match outgoing {
                 Some(payload) => {
-                    if let Err(error) = peer.session.send(&mut stream, &payload).await {
+                    let frame = shape_payload(&state, payload);
+                    if let Err(error) = peer.session.send(&mut stream, &frame).await {
                         break Err(error.into());
                     }
                 }
@@ -82,6 +92,14 @@ where
 
     state.pool.remove(peer.fingerprint(), handle.connection_id);
     result
+}
+
+/// Pad outgoing frames into fixed buckets (cover frames pass through).
+fn shape_payload(state: &NodeState, payload: Vec<u8>) -> Vec<u8> {
+    if fantuan_traffic::is_cover(&payload) || !state.config.traffic_shaping {
+        return payload;
+    }
+    fantuan_traffic::pad(&payload).unwrap_or(payload)
 }
 
 async fn handle_object<S>(
@@ -180,6 +198,9 @@ where
                 peer = peer.descriptor.uid,
                 "ignoring manifest outside a relay envelope"
             );
+        }
+        object @ (Object::DcRoundStart(_) | Object::DcRoundShare(_)) => {
+            crate::anon::handle_round(state, &object)?;
         }
     }
     Ok(())
