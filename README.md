@@ -23,6 +23,14 @@ padding/cover traffic, a TUI client, a local IRC bridge, and the offline
 simulation/analysis pipeline. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and
 [`docs/SECURITY_REPORT.md`](docs/SECURITY_REPORT.md).
 
+**Known issues (v0.1.0):** a post-Phase-6 review found that epoch batching
+and jitter are specified but not wired, that padding stops at 8187 bytes, and
+that four defects (restart-unsafe relay nonces and routes, session teardown
+on non-fatal rejections, a strict round counter, irreversible strikes) break
+real multi-node operation. The findings, their evidence and the phases that
+fix them are in [`docs/ROADMAP.md` §4](docs/ROADMAP.md#4-post-phase-6-review-2026-09-23-commit-9a4b7b0)
+and [`docs/PROTOCOL.md` §13](docs/PROTOCOL.md#13-implementation-status-and-known-gaps-v010).
+
 ## Repository layout
 
 | Path | Purpose |

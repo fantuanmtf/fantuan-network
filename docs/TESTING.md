@@ -10,9 +10,22 @@
 | Simulation (long) | large scenarios, many seeds | `scripts/run-anon-analysis.sh` | no (manual/nightly) |
 | I2P integration | real SAM sessions against i2pd | `cargo test -p fantuan-transport --features i2p-integration -- --ignored` | no (feature-gated) |
 
+Current baseline: 207 tests pass in `cargo test --workspace --release`
+(0 failed, 2 ignored — the I2P integration tests above).
+
+Gap: `analysis/` (the Python analyzer) has **no test suite and does not run
+in CI**, yet the anonymity gates are implemented there. Treat its output as
+unverified until Phase 9 adds analyzer tests and a CI job. The degenerate
+timing-correlation metric documented in `docs/ATTACKS.md` §5.1 shows what
+that costs.
+
 ## 2. Adversarial test rules
 
-- Every security claim is backed by a test that attempts to break it.
+- Every security claim is backed by a test that attempts to break it. A test
+  that asserts an algebraic identity satisfies the letter of this rule but not
+  its purpose: the N−1 collusion test in `fantuan-anon` is the known counter-
+  example and is scheduled for replacement in Phase 9
+  (`docs/ATTACKS.md` §5.2).
 - At minimum: forged signatures, replayed frames, tampered descriptors,
   mismatched Noise static keys, oversized inputs, non-canonical encodings.
 - Tests must not require network access.

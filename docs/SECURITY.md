@@ -2,7 +2,7 @@
 
 ## 1. Threat model
 
-| Adversary | Capabilities | Mitigations (Phase 1) |
+| Adversary | Capabilities | Mitigations |
 |-----------|--------------|------------------------|
 | Passive network observer | observes I2P traffic timing/volume | I2P transport; traffic shaping in Phase 5 |
 | Active MITM | can modify or drop traffic | Noise XX authentication; identity binding; descriptor signatures |
@@ -56,7 +56,10 @@ reference-only. No code is merged from it without re-derivation and tests.
   `require_vouch_for_gossip = true` and the forwarding peer has a stored
   vouch for the subject.
 - DC-Net participants can be restricted with `min_round_trust` (0 = open,
-  1 = Marginal+, 2 = Full+); evicted peers are excluded from selection.
+  1 = Marginal+, 2 = Full+); evicted peers are excluded from selection. The
+  default is 0, and the scheduler invites every connected non-evicted peer, so
+  the round candidate set is stable by default — which is exactly the
+  selective-participation exposure described in `docs/ATTACKS.md` §2.
 - Relay quotas are keyed by the verified identity key, so many claimed uids
   behind one key share a single quota.
 
@@ -69,6 +72,12 @@ reference-only. No code is merged from it without re-derivation and tests.
   (16) and gossip lists (64/256).
 - Freshness windows and monotonic nonces reject replay floods; chunk requests
   carry a hop limit and a per-(hash, requester) dedup table.
+- Counter-measure caveat: the connection loop currently treats *any* rejected
+  object as fatal, so admission rejections (expired or rate-limited relay, no
+  route, unknown channel sender) close the session instead of just dropping
+  the frame. A single crafted relay can therefore drop a link, and a plain
+  restart drops its own links because the relay nonce counter restarts at 1
+  while peers remember the previous high-water mark. Phase 7 fixes both.
 
 ## 3. Key handling
 
@@ -80,7 +89,7 @@ reference-only. No code is merged from it without re-derivation and tests.
 - Files are created with restrictive permissions from the first write.
 - Secret buffers use `zeroize` where the type system allows it.
 
-## 4. Known limitations (Phase 3)
+## 4. Known limitations (v0.1.0)
 
 - I2P anonymity assumptions are inherited from the local i2pd router.
 - Relay metadata (origin fingerprint, destination fingerprint, timing, size)
@@ -96,13 +105,29 @@ reference-only. No code is merged from it without re-derivation and tests.
   fails if every holder goes offline.
 - DC-Net rounds require a direct full mesh between participants; shares are
   not relayed, so round size is bounded by direct connectivity.
-- Traffic shaping is mix-lite (padding buckets plus cover); a global passive
-  adversary can still correlate long-term traffic volumes and cover traffic
-  is not yet rate-adaptive. A full mixnet is future work.
+- Traffic shaping is padding buckets plus fixed-rate cover. Epoch batching
+  and jitter are specified but not wired, padding stops at 8187 bytes (file
+  chunks, manifests and history responses leave unpadded), and the one-shot
+  `ping`/`send` path is unshaped. A global passive adversary can still
+  correlate long-term volumes and cadence; cover traffic is not
+  rate-adaptive. A full mixnet is future work.
 - Round participation and timing metadata remain visible to connected peers;
-  only the sender of an extracted message is hidden.
+  only the sender of an extracted message is hidden, and the initiator chooses
+  the channel label of an extracted message without any authentication.
+- DC-Net pairwise blocks derive from long-term X25519 static keys, so they
+  have no forward secrecy: one compromised static key retroactively reveals
+  that node's pairwise blocks for every past round.
+- `DcRoundStart` is unsigned and its initiator field is not checked against
+  the sending connection, so any connected peer can inject a round.
+- The round-id tracker accepts only `current + 1`; a node that misses one
+  round or observes a different participant set desynchronises permanently
+  and then accrues strikes against honest peers.
+- Extracted anonymous messages are not stored, flooded, history-served or
+  bridged to IRC; they exist as a local event only.
 - Trust scoring uses locally stored vouches; revoked or stale vouches are not
   yet expired automatically.
+- Reputation strikes are cumulative with no reachable reinstate path, so
+  eviction is permanent for the lifetime of the process.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake
   and rekeys after the configured frame budget.
 

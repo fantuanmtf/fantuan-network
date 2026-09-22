@@ -1,7 +1,8 @@
 # Fantuan Network — Architecture
 
-Status: Phase 1. This document describes the target architecture and the
-crate-level rules that keep it maintainable.
+Status: v0.1.0 (Phases 0–6 implemented). Deviations between this document and
+the code are tracked in `docs/PROTOCOL.md` §13 and `docs/ROADMAP.md` §4; the
+crate-level rules below describe the architecture as built.
 
 ## 1. Layers
 
@@ -76,11 +77,15 @@ Crates are added when their phase starts; no placeholder crates are kept.
 11. **Mesh DC-Net rounds.** Pairwise share keys come from the Noise X25519
     static keys, so no extra out-of-band exchange is needed. The initiator's
     message share is broadcast last; all shares are signed and verified
-    against certificates. Dropouts are penalized and evicted after three
-    strikes.
+    against certificates. Dropouts are penalized; three strikes evict, and
+    since `reward`/`reinstate` are unreachable the eviction currently lasts
+    for the process lifetime. Using long-term static keys for pairwise blocks
+    also means the round keys have no forward secrecy — per-round ephemeral DH
+    is Phase 8 work.
 12. **Traffic shaping.** Shaped connections pad every frame into fixed
-    buckets, send cover frames, batch by epoch and apply bounded jitter
-    (mix-lite). Full mixnet cells and layered routing are future work.
+    buckets and send cover frames; the epoch batcher and jitter helpers exist
+    but are **not wired**, and padding stops at 8187 bytes so larger objects
+    travel raw. Full mixnet cells and layered routing are Phase 11 work.
 
 ## 4. Data flow (Phase 1)
 

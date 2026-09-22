@@ -1,7 +1,9 @@
-# Fantuan Network — Protocol (Phase 1)
+# Fantuan Network — Protocol (v0.1.0)
 
-Status: Phase 1 specification. Implementation must match this document; any
-change lands here first.
+Status: implemented through Phase 6. Implementation must match this document;
+any change lands here first. Known deviations of the current implementation
+are listed in [section 13](#13-implementation-status-and-known-gaps-v010)
+rather than silently tolerated.
 
 ## 1. Layers
 
@@ -255,7 +257,9 @@ DcRoundShare { channel, round_id, peer_uid, xored_payload, signature }
 - Rounds require direct connectivity between all participants (mesh); the
   scheduler only selects currently connected, non-evicted peers.
 - Expired rounds with missing shares report the missing participants; three
-  strikes evict a peer from future rounds until reinstated.
+  strikes evict a peer from future rounds. Strikes are **cumulative over the
+  lifetime of the process**, not consecutive, and no reinstate path is wired
+  (see section 13.9).
 
 ### Traffic shaping
 
@@ -272,9 +276,15 @@ Every frame sent by a shaped connection is padded into one of the buckets
   accepted for compatibility with direct one-shot sends.
 - Cover traffic is generated once per cover interval toward every connected
   peer; it is indistinguishable from padded data at the frame level.
-- Epoch batching (10 s) and bounded jitter (≤ 250 ms) further blur send
-  timing. This is a mix-lite approximation; a full mixnet remains future
-  work.
+- Epoch batching (10 s) and bounded jitter (≤ 250 ms) are **specified but not
+  implemented**: `EpochBatcher` and `jitter_millis` exist in
+  `crates/fantuan-traffic/src/batching.rs` and have no call sites, so
+  outbound frames leave immediately and unjittered (see section 13.1).
+- Shaping applies only to frames up to 8187 bytes; larger objects (file
+  chunks, manifests, history responses) are sent as raw frames, and one-shot
+  `ping`/`send` connections bypass shaping entirely (see section 13.2).
+- The shipped approximation is therefore padding buckets plus fixed-rate
+  cover only; a full mixnet remains future work.
 
 ## 12. Failure handling
 
@@ -282,4 +292,89 @@ Every frame sent by a shaped connection is padded into one of the buckets
 - Idle read timeout: 120 seconds.
 - Write timeout per frame: 15 seconds.
 - Any signature, size or binding failure closes the connection; errors are
-  logged without secrets.
+  logged without secrets. The implementation currently also closes the
+  connection on non-fatal admission and routing rejections, which is stricter
+  than this specification; see section 13.4.
+
+## 13. Implementation status and known gaps (v0.1.0)
+
+The following deviations were found in a post-Phase-6 review. They are listed
+here because the conventions require unwired functionality to be either
+deleted or explicitly documented, and because every security claim must be
+backed by a test. None of them are silent: each has an owner phase in
+`docs/ROADMAP.md`.
+
+### 13.1 Timing shaping is not wired
+
+`EpochBatcher`, `EPOCH_MS` and `jitter_millis` are re-exported but never
+called; outbound frames are written as soon as they are dequeued
+(`crates/fantuan-node/src/connection.rs`). Claims in earlier revisions of
+this document, of `docs/ATTACKS.md` and of `docs/ROADMAP.md` that batching
+and jitter were shipped have been corrected. Scheduled: Phase 8.
+
+### 13.2 Size shaping has two leaks
+
+`pad()` returns `None` above `max_payload()` = 8187 bytes and
+`shape_payload` then sends the payload raw, so file chunks (up to
+`MAX_OBJECT_BYTES` = 64 KiB), manifests and history responses are unpadded.
+The one-shot `ping`/`send` path opens its own session and does not shape at
+all. Scheduled: Phase 8.
+
+### 13.3 Relay admission and routes do not survive a restart
+
+The relay nonce counter starts at 1 on every process start
+(`crates/fantuan-node/src/state.rs`), while receivers keep `last_nonce` per
+verified origin in memory. A restarted node is therefore treated as a
+replayer by peers that have not restarted. Routing tables are also rebuilt
+from scratch, so a restarted node answers relay attempts with "no route".
+
+### 13.4 Rejected objects close the connection
+
+`handle_object` returns an error and `connection.rs` breaks the session loop
+for any rejected object, including non-fatal cases such as an expired or
+rate-limited relay, a relay with no route, and a channel message from an
+unknown sender. Section 12 of this document describes this as intended
+behaviour for signature, size and binding failures; applying it to admission
+and routing rejections lets a peer (or a plain restart, see 13.3) tear down a
+link it does not own. Scheduled: Phase 7.
+
+### 13.5 Round ids advance by exactly one
+
+`RoundTracker::mark_seen` accepts only `current + 1`. A participant that is
+absent from one round, or that misses a start, desynchronises permanently:
+its own starts are rejected by peers that advanced, and their starts are
+rejected by it. This requires every node to observe an identical participant
+set in every round, which does not hold outside a full mesh. Scheduled:
+Phase 7.
+
+### 13.6 `DcRoundStart` is unsigned
+
+Shares are signed and verified against stored certificates, but the round
+start announcing initiator, participants and channel carries no signature and
+the receiving side does not check that the sending connection belongs to
+`initiator`. Any connected peer can inject a round and occupy a collector
+slot. Scheduled: Phase 8.
+
+### 13.7 DC-Net shares have no forward secrecy
+
+Pairwise blocks are `HKDF(ECDH(static_a, static_b))` over long-term X25519
+static keys, keyed by `round_id`. Compromise of one participant's static key
+retroactively reveals that node's pairwise blocks for every past round it
+participated in, which is enough to test whether it was the sender of a given
+round. Scheduled: Phase 8.
+
+### 13.8 Extracted anonymous messages have no application path
+
+A message extracted from a round emits `NodeEvent::Anonymous` only: it is not
+stored, not flooded, not served in history and not forwarded by the IRC
+bridge, and the channel label it carries is chosen by the initiator and
+unauthenticated. Anonymous sending is therefore usable only as a local
+display line. Scheduled: Phase 8.
+
+### 13.9 Reputation is a one-way ratchet
+
+`ReputationTracker::reward` and `::reinstate` have no callers anywhere in the
+workspace, and strikes are cumulative rather than consecutive as the module
+documentation states. Three lifetime dropouts therefore evict a peer for the
+rest of the process, and the reinstate path described in section 11 does not
+exist. Scheduled: Phase 7.
