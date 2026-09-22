@@ -29,7 +29,7 @@ impl TestNode {
             channels: channels.iter().map(|c| c.to_string()).collect(),
             ..NodeConfig::default()
         };
-        let state = NodeState::new(identity, config, trust, messages, chunks, events_tx);
+        let state = NodeState::new(identity, config, trust, messages, chunks, events_tx, None);
         Self { state, dir }
     }
 }

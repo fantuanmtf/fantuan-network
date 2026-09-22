@@ -5,6 +5,7 @@
 //! subscriptions and the connection pool.
 
 use crate::admission::AdmissionControl;
+use crate::nonce::RelayNonce;
 use crate::store::MessageStore;
 use fantuan_anon::{ReputationTracker, RoundDriver};
 use fantuan_core::config::NodeConfig;
@@ -13,7 +14,7 @@ use fantuan_storage::{ChunkCache, Contact, RoutingTable, node_id};
 use fantuan_transport::{ConnectionPool, DEFAULT_MAX_CONNECTIONS};
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc};
@@ -140,11 +141,14 @@ pub struct NodeState {
     pub reputation: Mutex<ReputationTracker>,
     seen_requests: Mutex<HashMap<([u8; 32], String), Instant>>,
     event_stream: broadcast::Sender<NodeEvent>,
-    relay_nonce: AtomicU64,
+    relay_nonce: RelayNonce,
 }
 
 impl NodeState {
     /// Create shared state for one node.
+    ///
+    /// `relay_nonce_path` is the durable reservation file for outbound relay
+    /// nonces; `None` keeps the counter in memory (tests, ephemeral nodes).
     pub fn new(
         identity: Arc<Identity>,
         config: NodeConfig,
@@ -152,6 +156,7 @@ impl NodeState {
         messages: MessageStore,
         chunks: ChunkCache,
         events: mpsc::UnboundedSender<NodeEvent>,
+        relay_nonce_path: Option<PathBuf>,
     ) -> Arc<Self> {
         let subscriptions = Subscriptions {
             channels: config.channels.iter().cloned().collect(),
@@ -176,7 +181,7 @@ impl NodeState {
             reputation: Mutex::new(ReputationTracker::new()),
             seen_requests: Mutex::new(HashMap::new()),
             event_stream,
-            relay_nonce: AtomicU64::new(0),
+            relay_nonce: RelayNonce::load(relay_nonce_path),
         })
     }
 
@@ -284,8 +289,10 @@ impl NodeState {
     }
 
     /// Next relay nonce for envelopes we originate.
+    ///
+    /// Strictly increasing across restarts; see [`crate::nonce`].
     pub fn next_relay_nonce(&self) -> u64 {
-        self.relay_nonce.fetch_add(1, Ordering::Relaxed) + 1
+        self.relay_nonce.next()
     }
 
     /// Record a peer in the Kademlia routing table.

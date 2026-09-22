@@ -28,7 +28,7 @@ fn test_node() -> TestNode {
     let (events_tx, _events) = mpsc::unbounded_channel();
     let config = NodeConfig::default();
     TestNode {
-        state: NodeState::new(identity, config, trust, messages, chunks, events_tx),
+        state: NodeState::new(identity, config, trust, messages, chunks, events_tx, None),
         _dir: dir,
     }
 }

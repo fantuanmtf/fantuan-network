@@ -25,6 +25,7 @@ cargo test --workspace                              # attack assertions in CI
 | 6 | N−k collusion | minority of colluders | `fantuan-anon` collusion tests | attribution fails; unknown pairwise blocks remain |
 | 7 | Replay / forgery | replayed shares, forged signatures | `fantuan-anon`, `fantuan-msg` tests | rejected |
 | 8 | Unknown signer | shares signed by unregistered keys | `fantuan-anon::driver` | rejected before collection |
+| 11 | Envelope replay / expiry / stale round | relayed envelope with a replayed nonce or old timestamp; a round start older than the receiver's tracker | `fantuan-node` connection loop, `fantuan-anon::round` | object dropped, session kept (`relay_resilience.rs`, `dcnet_partial_mesh.rs`) |
 | 9 | Sybil descriptors | unvouched third-party gossip | `fantuan-node::gossip` test | rejected when `require_vouch_for_gossip` is on |
 | 10 | Frame flood | excessive inbound frames | `fantuan-traffic::limit` | dropped over budget, connection kept |
 
@@ -68,11 +69,16 @@ cargo test --workspace                              # attack assertions in CI
 
 - Rounds expire after 15 s; missing shares produce strikes.
 - Three strikes evict a peer from future rounds (`MAX_STRIKES = 3`).
-- Strikes are **cumulative over the process lifetime**, not consecutive as the
-  `fantuan-anon` module doc states, and eviction is currently **irreversible**:
-  `ReputationTracker::reward` and `::reinstate` have no callers, so the
-  "until reinstated" wording in `docs/PROTOCOL.md` describes a path that does
-  not exist.
+- Strikes are **consecutive**: a completed round clears them
+  (`ReputationTracker::reward`, driven by `RoundAction::completed`). Eviction
+  is reversible with the `reinstate` control command, or by restarting the
+  process.
+- A round of our own that expires with no participants at all is **not**
+  attributed to anyone: that pattern means our start was likely already stale,
+  and blaming the whole participant set would let one race evict honest peers.
+  An adversary that simply ignores your rounds therefore costs you the round,
+  not the peer's standing — acceptable, because evicting a peer who ignored
+  one round was never worth the false positives.
 
 ## 5. Known gaps and recommendations
 

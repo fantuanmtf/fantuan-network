@@ -43,6 +43,9 @@ enum Request {
         channel: String,
         text: String,
     },
+    Reinstate {
+        uid: String,
+    },
     FilePut {
         path: String,
         to: Option<String>,
@@ -229,6 +232,16 @@ async fn dispatch(state: &Arc<NodeState>, request: Request) -> Value {
             Ok(()) => json!({"ok": true, "queued": true}),
             Err(error) => json!({"ok": false, "error": error.to_string()}),
         },
+        Request::Reinstate { uid } => {
+            let mut reputation = match state.reputation.lock() {
+                Ok(tracker) => tracker,
+                Err(_) => return json!({"ok": false, "error": "reputation tracker poisoned"}),
+            };
+            let evicted = reputation.is_evicted(&uid);
+            let strikes = reputation.strikes(&uid);
+            reputation.reinstate(&uid);
+            json!({"ok": true, "uid": uid, "was_evicted": evicted, "strikes": strikes})
+        }
         Request::FilePut { path, to } => {
             match crate::files::publish_file(state, std::path::Path::new(&path), to.as_deref()) {
                 Ok(file_id) => json!({"ok": true, "file_id": file_id}),

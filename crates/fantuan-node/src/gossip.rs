@@ -189,7 +189,7 @@ mod tests {
             require_vouch_for_gossip: require_vouch,
             ..NodeConfig::default()
         };
-        NodeState::new(identity, config, trust, messages, chunks, events)
+        NodeState::new(identity, config, trust, messages, chunks, events, None)
     }
 
     fn announcement(identity: &Identity) -> Gossip {

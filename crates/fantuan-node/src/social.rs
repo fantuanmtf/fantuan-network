@@ -5,6 +5,7 @@
 //! flooded to other peers; history requests are answered from the local
 //! store so peers can catch up after being offline.
 
+use crate::reject::Dropped;
 use crate::state::{NodeEvent, NodeState};
 use anyhow::{Result, anyhow};
 use fantuan_msg::{
@@ -114,8 +115,14 @@ pub fn handle_channel(
     peer_cert: &[u8],
     message: ChannelMessage,
 ) -> Result<bool> {
-    let cert_bytes = resolve_cert(state, peer_fingerprint, peer_cert, &message.sender)?;
-    message.verify_cert_bytes(&cert_bytes)?;
+    // Flooded messages are authored by third parties: an unknown sender drops
+    // the message, it does not close the session we received it from.
+    let own = message.sender == peer_fingerprint;
+    let cert_bytes =
+        resolve_cert(state, peer_fingerprint, peer_cert, &message.sender).map_err(Dropped::wrap)?;
+    message
+        .verify_cert_bytes(&cert_bytes)
+        .map_err(|error| Dropped::classify(error, own))?;
     if !state.is_subscribed_channel(&message.channel) {
         return Ok(false);
     }
@@ -151,8 +158,11 @@ pub fn handle_forum(
     peer_cert: &[u8],
     post: ForumPost,
 ) -> Result<bool> {
-    let cert_bytes = resolve_cert(state, peer_fingerprint, peer_cert, &post.sender)?;
-    post.verify_cert_bytes(&cert_bytes)?;
+    let own = post.sender == peer_fingerprint;
+    let cert_bytes =
+        resolve_cert(state, peer_fingerprint, peer_cert, &post.sender).map_err(Dropped::wrap)?;
+    post.verify_cert_bytes(&cert_bytes)
+        .map_err(|error| Dropped::classify(error, own))?;
     if !state.is_subscribed_board(&post.board) {
         return Ok(false);
     }
@@ -325,8 +335,12 @@ pub fn handle_delete(
     peer_cert: &[u8],
     delete: DeleteRequest,
 ) -> Result<bool> {
-    let cert_bytes = resolve_cert(state, peer_fingerprint, peer_cert, &delete.sender)?;
-    delete.verify_cert_bytes(&cert_bytes)?;
+    let own = delete.sender == peer_fingerprint;
+    let cert_bytes =
+        resolve_cert(state, peer_fingerprint, peer_cert, &delete.sender).map_err(Dropped::wrap)?;
+    delete
+        .verify_cert_bytes(&cert_bytes)
+        .map_err(|error| Dropped::classify(error, own))?;
     let removed = state
         .messages
         .lock()

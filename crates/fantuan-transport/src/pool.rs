@@ -6,7 +6,7 @@
 
 use crate::error::{Result, TransportError};
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::mpsc;
 
@@ -36,6 +36,7 @@ pub struct ConnectionHandle {
 pub struct ConnectionPool {
     connections: Arc<Mutex<HashMap<String, ConnectionHandle>>>,
     max_connections: usize,
+    live: Arc<AtomicUsize>,
 }
 
 impl ConnectionPool {
@@ -44,6 +45,7 @@ impl ConnectionPool {
         Self {
             connections: Arc::new(Mutex::new(HashMap::new())),
             max_connections,
+            live: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -76,6 +78,7 @@ impl ConnectionPool {
             connection_id: next_connection_id(),
         };
         connections.insert(peer.to_string(), handle.clone());
+        self.live.fetch_add(1, Ordering::Relaxed);
         Ok((handle, rx))
     }
 
@@ -91,6 +94,28 @@ impl ConnectionPool {
                 tracing::info!(peer, connection_id, "connection removed");
             }
         }
+        // The task that owned the connection is finishing either way.
+        let _ = self
+            .live
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |live| {
+                Some(live.saturating_sub(1))
+            });
+    }
+
+    /// Close every writer queue.
+    ///
+    /// Connection tasks keep draining what is already queued and then end, so
+    /// a shutdown flushes in-flight frames instead of dropping them. Pair this
+    /// with [`ConnectionPool::live`] to wait for the tasks to finish.
+    pub fn close_all(&self) {
+        if let Ok(mut connections) = self.connections.lock() {
+            connections.clear();
+        }
+    }
+
+    /// Connection tasks that have registered and not yet finished.
+    pub fn live(&self) -> usize {
+        self.live.load(Ordering::Relaxed)
     }
 
     /// True when a connection for `peer` is registered.
@@ -198,5 +223,26 @@ mod tests {
     fn zero_capacity_is_rejected() {
         let pool = ConnectionPool::new(4);
         assert!(pool.register("dave", 0).is_err());
+    }
+
+    #[test]
+    fn close_all_drains_then_reports_finished_tasks() {
+        let pool = ConnectionPool::new(4);
+        let (alice, mut alice_rx) = pool.register("alice", 4).expect("alice");
+        let (bob, _bob_rx) = pool.register("bob", 4).expect("bob");
+        pool.try_send("alice", b"queued".to_vec()).expect("send");
+        assert_eq!(pool.live(), 2);
+
+        pool.close_all();
+        assert_eq!(pool.count(), 0, "no new frames can be queued");
+        assert!(pool.try_send("alice", b"late".to_vec()).is_err());
+        // A dropped sender still yields what was already queued: drain first,
+        // then finish.
+        assert_eq!(alice_rx.try_recv().expect("drained"), b"queued");
+        assert_eq!(pool.live(), 2, "tasks are still draining");
+
+        pool.remove("alice", alice.connection_id);
+        pool.remove("bob", bob.connection_id);
+        assert_eq!(pool.live(), 0);
     }
 }

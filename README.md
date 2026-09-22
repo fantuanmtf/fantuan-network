@@ -43,6 +43,7 @@ and [`docs/PROTOCOL.md` §13](docs/PROTOCOL.md#13-implementation-status-and-know
 | `crates/fantuan-node` | `fantuan-node` binary |
 | `analysis/` | Python statistical analysis of simulation transcripts |
 | `docs/` | English project documentation |
+| `packaging/` | systemd unit for running a node as a service |
 | `reports/` | Generated English test and anonymity-analysis reports |
 
 Key documents: [ARCHITECTURE](docs/ARCHITECTURE.md) ·
@@ -69,6 +70,10 @@ Local I2P integration tests require a running i2pd with the SAM bridge:
 bash scripts/i2p-dev.sh
 cargo test -p fantuan-transport --features i2p-integration -- --ignored
 ```
+
+Running a node as a service: install `packaging/fantuan-node.service` as a
+systemd user unit. `systemctl --user stop` sends SIGTERM, which the node
+answers by draining queued frames before it exits.
 
 ## Engineering conventions
 

@@ -1,6 +1,6 @@
 # Fantuan Network — Internal Security Report (v0.1.0)
 
-Status: internal review of Phases 1–6. This report is not a substitute for a
+Status: internal review of Phases 1–7. This report is not a substitute for a
 third-party audit.
 
 ## 1. Scope
@@ -58,8 +58,10 @@ run in CI, and holds every anonymity gate (6.7, 6.8).
   budget, collector cap 16, gossip announcements 64 / vouches 256.
 - **Relay admission**: per-origin nonce, ±60 s freshness, 60/60 s rate limit,
   TOFU certificate pinning, hop limit 8, inbound hops validation.
-- **Anonymity layer**: round ids advance by exactly one, share signatures
-  verified against known certificates, dropouts penalized and evicted.
+- **Anonymity layer**: round ids are clock-derived and quantised (stale ids
+  and ids beyond the skew bound refused), share signatures verified against
+  known certificates, consecutive strikes with a reachable `reinstate`, and no
+  attribution for a round of ours that nobody answered.
 - **Local interfaces**: control socket mode 0600, IRC bridge bind address is
   operator-controlled (loopback recommended), delete requests only accepted
   from the original owner.
@@ -67,10 +69,11 @@ run in CI, and holds every anonymity gate (6.7, 6.8).
 
 ## 5. Verification evidence
 
-- 207 workspace tests pass (`cargo test --workspace --release`, 0 failed,
-  2 ignored I2P integration tests), measured on 2026-09-23 at commit
-  `9a4b7b0`. An earlier revision of this section claimed "221+", which was
-  never true.
+- 223 workspace tests pass (`cargo test --workspace --release`, 0 failed,
+  2 ignored I2P integration tests); Phase 7 raised the count from 207 at
+  `9a4b7b0`. A revision of this section that predates Phase 7 claimed "221+"
+  when the real number was 207, which is exactly the kind of drift the review
+  was meant to catch.
 - `clippy -D warnings`, `cargo fmt --check` and a 1000-line per-file limit
   enforced in CI. The Python analyzer runs **outside** CI and has no tests of
   its own (see 6.8).
@@ -105,30 +108,40 @@ Payloads above 8187 bytes go out as raw frames, which covers file chunks
 (≤ 64 KiB), manifests and history responses; the one-shot `ping`/`send`
 session bypasses shaping entirely.
 
-### 6.3 Restart is not survivable
+### 6.3 Restart is not survivable — resolved (Phase 7)
 
-Relay nonces restart at 1, and routing tables, DHT state, admission pins and
-DC-Net round state are all in-memory. A restarted node is treated as a
-replayer by its peers, has no route to answer relay attempts with, and has no
-automatic re-dial for known peers.
+Relay nonces now come from a restart-safe allocator that persists a
+reservation block before use and floors the counter at the wall clock; known
+peers are redialled at startup, which rebuilds routes from gossip. Regression
+test: `relay_resilience.rs::relay_survives_a_sender_restart`.
 
-### 6.4 A rejected object closes the connection
+What remains: DHT state, admission pins and DC-Net round state are still
+in-memory, so a restart re-learns them. Admission pins are rebuilt from the
+first envelope received, which is the documented TOFU behaviour.
 
-Admission and routing rejections are returned as errors from `handle_object`
-and break the session loop, so a crafted relay — or a peer's ordinary
-restart — tears down a link rather than dropping a frame.
+### 6.4 A rejected object closes the connection — resolved (Phase 7)
 
-### 6.5 Round ids desynchronise permanently
+Rejections of third-party objects (relayed envelopes, flooded messages and
+chunks, unservable chunk requests) now drop the object and keep the session;
+only signature, size, encoding and binding failures on the peer's own
+material stay fatal. Regression test:
+`relay_resilience.rs::rejected_relays_keep_the_session_alive`.
 
-`RoundTracker::mark_seen` accepts only `current + 1`. Any missed round, or any
-divergence in the observed participant set between nodes, desynchronises the
-tracker for good; honest peers then accrue strikes against each other.
+### 6.5 Round ids desynchronise permanently — resolved (Phase 7)
 
-### 6.6 Reputation is a one-way ratchet
+Round ids are wall-clock based and quantised, so a node that observed no round
+is not behind its peers and can still initiate. Regression test:
+`dcnet_partial_mesh.rs::a_node_outside_the_rounds_can_still_initiate`.
 
-Strikes are cumulative (the module doc says consecutive), and
-`reward`/`reinstate` are unreachable, so eviction lasts for the process
-lifetime. `docs/PROTOCOL.md` has been corrected accordingly.
+New residual: participation now depends on a roughly correct clock. A node
+off by more than the 30 s skew bound cannot join rounds at all, and a forward
+clock jump invalidates in-flight rounds.
+
+### 6.6 Reputation is a one-way ratchet — resolved (Phase 7)
+
+Strikes are consecutive (`reward` is driven by completed rounds) and eviction
+is reversible through the `reinstate` control command. A round of our own that
+nobody joined is no longer attributed to the participants.
 
 ### 6.7 The timing-correlation metric is degenerate
 
@@ -155,16 +168,19 @@ history, no IRC bridging — and its channel label is unauthenticated.
 
 ## 7. Recommendations
 
-1. Fix the correctness and wiring defects in 6.1–6.6 before adding features
-   (Phase 7) and before building the mixnet (Phase 11): a mixnet whose gates
-   are tautological would not be evidence of anything.
+1. ~~Fix the correctness and wiring defects in 6.1–6.6~~ Phase 7 closed
+   6.3–6.6. 6.1 (timing shaping) and 6.2 (size shaping) move to Phase 8.
 2. Close the anonymous layer end to end (Phase 8) so anonymity is a usable
    property rather than a local display line.
 3. Make the evidence trustworthy — analyzer tests in CI, a real timing metric,
    a real attribution test, longer campaigns — before commissioning the audit
-   (Phase 9).
+   (Phase 9). A mixnet whose gates are tautological would not be evidence of
+   anything.
 4. Commission an external audit of the session/round/relay paths once Phase 9
    has landed.
 5. Add vouch expiry/revocation and per-peer behavior scoring.
 6. Consider forward-secret ratcheting for direct sessions, manifests and
    DC-Net pairwise blocks.
+7. Remove the clock dependence introduced by 6.5's fix, or bound it: a round
+   protocol that needs synchronized wall clocks should say so in the operator
+   documentation.

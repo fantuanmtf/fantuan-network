@@ -41,6 +41,11 @@ pub struct RoundContext<'a> {
     pub peer_certs: &'a HashMap<String, Vec<u8>>,
 }
 
+/// Current wall-clock time in milliseconds, the source of round ids.
+fn now_ms() -> u64 {
+    fantuan_core::time::now_unix_millis() as u64
+}
+
 /// A message extracted from a completed round.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Extracted {
@@ -65,6 +70,15 @@ pub struct RoundFailure {
     pub initiator: String,
 }
 
+/// A round that completed with every share present.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoundCompletion {
+    /// Round id.
+    pub round_id: u64,
+    /// Participants that contributed, excluding the local node.
+    pub participants: Vec<String>,
+}
+
 /// Result of handling one incoming object.
 #[derive(Debug, Default)]
 pub struct RoundAction {
@@ -72,6 +86,9 @@ pub struct RoundAction {
     pub extracted: Vec<Extracted>,
     /// Objects to send, as `(target, object)`.
     pub outgoing: Vec<(String, Object)>,
+    /// Rounds that completed with every share: proof a peer participated, so
+    /// the caller can clear its strikes.
+    pub completed: Vec<RoundCompletion>,
 }
 
 /// Per-node round state machine.
@@ -88,6 +105,7 @@ pub struct RoundDriver {
     my_share_broadcast: bool,
     pending_outgoing: Vec<(String, Object)>,
     retry_after_peer: Option<u64>,
+    deadline_secs: u64,
 }
 
 impl Default for RoundDriver {
@@ -112,7 +130,16 @@ impl RoundDriver {
             my_share_broadcast: false,
             pending_outgoing: Vec::new(),
             retry_after_peer: None,
+            deadline_secs: ROUND_DEADLINE_SECS,
         }
+    }
+
+    /// Override the round deadline used for rounds we initiate.
+    ///
+    /// Shorter deadlines suit tests and deployments that prefer a fast
+    /// failure; the value is clamped to the protocol range.
+    pub fn set_deadline_secs(&mut self, secs: u64) {
+        self.deadline_secs = secs.clamp(1, fantuan_msg::DCNET_MAX_DEADLINE_SECS);
     }
 
     /// Queue a channel message for the next round.
@@ -170,7 +197,7 @@ impl RoundDriver {
             return Err(AnonError::Round("too many participants".to_string()));
         }
 
-        let round_id = self.tracker.next_round();
+        let round_id = self.tracker.next_round(now_ms());
         let share = compute_xor_share(
             ctx.noise_secret,
             ctx.my_uid,
@@ -187,7 +214,7 @@ impl RoundDriver {
             round_id,
             ctx.my_uid,
             participants,
-            ROUND_DEADLINE_SECS,
+            self.deadline_secs,
             DCNET_PAYLOAD_LEN,
         )?;
         self.collectors.insert(round_id, collector);
@@ -204,7 +231,7 @@ impl RoundDriver {
             round_id,
             ctx.my_uid,
             participants,
-            ROUND_DEADLINE_SECS,
+            self.deadline_secs,
             DCNET_PAYLOAD_LEN,
         )?;
         let mut outgoing = Vec::new();
@@ -250,13 +277,28 @@ impl RoundDriver {
                 .into_iter()
                 .filter(|uid| uid != ctx.my_uid)
                 .collect();
-            if !missing.is_empty() {
+            // A round of ours that nobody joined is not evidence against any
+            // individual participant: it usually means our start was already
+            // stale by the time it went out (see `RoundTracker::mark_seen`),
+            // and blaming the whole set would let one race evict honest peers.
+            //
+            // A round we participate in always holds at least our own share,
+            // so an empty collector can only be one of our own abandoned
+            // rounds. Partial participation is still attributed: one peer
+            // answering while others stay silent is a dropout, not a race.
+            let abandoned = collector.initiator == ctx.my_uid && collector.received_count() == 0;
+            if !missing.is_empty() && !abandoned {
                 failures.push(RoundFailure {
                     channel: collector.channel.clone(),
                     round_id,
                     missing,
                     initiator: collector.initiator.clone(),
                 });
+            } else if abandoned {
+                tracing::debug!(
+                    round_id,
+                    "round of ours expired with no shares; not attributing a dropout"
+                );
             }
             let participants: Vec<String> = collector.participants.iter().cloned().collect();
             let channel = collector.channel.clone();
@@ -288,7 +330,7 @@ impl RoundDriver {
             tracing::warn!(round_id = start.round_id, "collector limit reached");
             return RoundAction::default();
         }
-        if !self.tracker.mark_seen(start.round_id) {
+        if !self.tracker.mark_seen(start.round_id, now_ms()) {
             let conflict =
                 self.pending_round_id == Some(start.round_id) && start.initiator != ctx.my_uid;
             if conflict && start.initiator.as_str() < ctx.my_uid {
@@ -420,6 +462,14 @@ impl RoundDriver {
             };
             let participants: Vec<String> = collector.participants.iter().cloned().collect();
             let channel = collector.channel.clone();
+            action.completed.push(RoundCompletion {
+                round_id: share.round_id,
+                participants: participants
+                    .iter()
+                    .filter(|uid| uid.as_str() != ctx.my_uid)
+                    .cloned()
+                    .collect(),
+            });
             self.collectors.remove(&share.round_id);
             if is_my_round {
                 self.pending_round_id = None;
@@ -472,6 +522,7 @@ mod tests {
     use super::*;
     use crate::round::RoundCollector;
     use fantuan_identity::Identity;
+    use std::time::Duration;
     use x25519_dalek::{PublicKey, StaticSecret};
 
     struct TestNode {
@@ -631,6 +682,70 @@ mod tests {
         collector.submit_share("A", &[0u8; 256]).expect("own");
         assert_eq!(collector.missing_participants(), vec!["B".to_string()]);
         assert!(!collector.is_complete());
+    }
+
+    #[test]
+    fn a_round_nobody_joined_is_not_attributed() {
+        let alice = node("alice");
+        let bob = node("bob");
+        let carol = node("carol");
+        let (noise, certs) = maps(&[&alice, &bob, &carol]);
+        let ctx_a = context(&alice, &noise, &certs);
+        let participants = vec![alice.uid.clone(), bob.uid.clone(), carol.uid.clone()];
+
+        let mut driver = RoundDriver::new();
+        driver.set_deadline_secs(1);
+        let outgoing = driver
+            .initiate("#anon", "nobody answers", &participants, &ctx_a)
+            .expect("initiate");
+        assert!(!outgoing.is_empty(), "the start went out");
+
+        std::thread::sleep(Duration::from_millis(1_200));
+        let failures = driver.tick(&ctx_a);
+        assert!(
+            failures.is_empty(),
+            "an unanswered round is not evidence against anyone: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn a_partial_response_is_attributed() {
+        let alice = node("alice");
+        let bob = node("bob");
+        let carol = node("carol");
+        let (noise, certs) = maps(&[&alice, &bob, &carol]);
+        let ctx_a = context(&alice, &noise, &certs);
+        let ctx_b = context(&bob, &noise, &certs);
+        let participants = vec![alice.uid.clone(), bob.uid.clone(), carol.uid.clone()];
+
+        let mut driver_a = RoundDriver::new();
+        driver_a.set_deadline_secs(1);
+        let mut driver_b = RoundDriver::new();
+        let outgoing = driver_a
+            .initiate("#anon", "bob answers", &participants, &ctx_a)
+            .expect("initiate");
+
+        // Deliver the start to bob only: carol has no driver here, which is
+        // exactly what "silent" means for this round.
+        let (_, start) = outgoing
+            .into_iter()
+            .find(|(uid, _)| uid == &bob.uid)
+            .expect("bob receives the start");
+        let bob_action = driver_b.handle(&start, &ctx_b);
+        for (uid, object) in &bob_action.outgoing {
+            if uid == &alice.uid {
+                driver_a.handle(object, &ctx_a);
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(1_200));
+        let failures = driver_a.tick(&ctx_a);
+        assert_eq!(failures.len(), 1, "one round expired: {failures:?}");
+        assert_eq!(
+            failures[0].missing,
+            vec![carol.uid.clone()],
+            "the silent participant is the one attributed"
+        );
     }
 
     #[test]

@@ -1,0 +1,44 @@
+# Fantuan Network node — systemd user unit.
+#
+# Install as a user unit, because the node keeps its identity and trust store
+# under the invoking user's home directory:
+#
+#   install -Dm644 packaging/fantuan-node.service \
+#       ~/.config/systemd/user/fantuan-node.service
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now fantuan-node
+#
+# The node talks to the local i2pd SAM bridge; it needs no other network
+# access of its own. A stop sends SIGTERM, which the node answers by closing
+# its writer queues and draining queued frames before exiting.
+
+[Unit]
+Description=Fantuan Network node
+Documentation=https://github.com/fantuanmtf/fantuan-network
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/fantuan-node run
+Restart=on-failure
+RestartSec=5s
+
+# Give the drain loop in `run` time to flush queued frames.
+KillSignal=SIGTERM
+TimeoutStopSec=10s
+
+# The node needs its data directory and nothing else from the home tree.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.fantuan
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+
+[Install]
+WantedBy=default.target

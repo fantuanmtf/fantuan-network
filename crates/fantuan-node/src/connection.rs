@@ -77,6 +77,16 @@ where
                         fantuan_traffic::Frame::Data(payload)
                         | fantuan_traffic::Frame::Raw(payload) => {
                             if let Err(error) = handle_object(&state, &mut peer, &mut stream, payload).await {
+                                // A rejected third-party object (relayed
+                                // envelope, flooded message, unservable chunk
+                                // request) drops the object, not the link.
+                                if crate::reject::Dropped::is(&error) {
+                                    tracing::debug!(
+                                        peer = peer.descriptor.uid,
+                                        "object rejected, session kept: {error:#}"
+                                    );
+                                    continue;
+                                }
                                 break Err(error);
                             }
                         }

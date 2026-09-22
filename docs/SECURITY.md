@@ -72,12 +72,13 @@ reference-only. No code is merged from it without re-derivation and tests.
   (16) and gossip lists (64/256).
 - Freshness windows and monotonic nonces reject replay floods; chunk requests
   carry a hop limit and a per-(hash, requester) dedup table.
-- Counter-measure caveat: the connection loop currently treats *any* rejected
-  object as fatal, so admission rejections (expired or rate-limited relay, no
-  route, unknown channel sender) close the session instead of just dropping
-  the frame. A single crafted relay can therefore drop a link, and a plain
-  restart drops its own links because the relay nonce counter restarts at 1
-  while peers remember the previous high-water mark. Phase 7 fixes both.
+- Rejections of objects the peer did not author — relayed envelopes, flooded
+  messages and chunks, unservable chunk requests — drop the object and keep
+  the session, so a crafted relay can no longer tear down a link. Only
+  signature, size, encoding and binding failures on the peer's own material
+  close a connection.
+- Outbound relay nonces are restart-safe (persisted reservation plus a
+  wall-clock floor), so a restarted node is not mistaken for a replayer.
 
 ## 3. Key handling
 
@@ -86,6 +87,9 @@ reference-only. No code is merged from it without re-derivation and tests.
   - `secret.pgp` — secret key material (0600);
   - `descriptor.cbor` and `descriptor.sig`;
   - `noise.x25519` — X25519 static secret (0600).
+- `~/.fantuan/relay.nonce` (0600) holds the outbound relay nonce
+  reservation. It is not secret — it is a counter watermark — but losing it
+  means the node falls back to the wall clock to keep nonces increasing.
 - Files are created with restrictive permissions from the first write.
 - Secret buffers use `zeroize` where the type system allows it.
 
@@ -119,15 +123,18 @@ reference-only. No code is merged from it without re-derivation and tests.
   that node's pairwise blocks for every past round.
 - `DcRoundStart` is unsigned and its initiator field is not checked against
   the sending connection, so any connected peer can inject a round.
-- The round-id tracker accepts only `current + 1`; a node that misses one
-  round or observes a different participant set desynchronises permanently
-  and then accrues strikes against honest peers.
+- Round ids are wall-clock based, so a node whose clock is far off (more than
+  the 30 s skew bound) cannot participate; and a clock that jumps forward
+  invalidates in-flight rounds. Correcting this means agreeing on time, which
+  is out of scope for a mesh round.
 - Extracted anonymous messages are not stored, flooded, history-served or
   bridged to IRC; they exist as a local event only.
 - Trust scoring uses locally stored vouches; revoked or stale vouches are not
   yet expired automatically.
-- Reputation strikes are cumulative with no reachable reinstate path, so
-  eviction is permanent for the lifetime of the process.
+- Redialling known peers at startup (`redial_known_peers`, default on)
+  announces our liveness to every peer in the trust store, up to 16 per start.
+  Operators who treat that as a leak can turn it off and list peers in
+  `config.peers` instead.
 - No forward-secret ratchet yet: each session uses a fresh Noise handshake
   and rekeys after the configured frame budget.
 

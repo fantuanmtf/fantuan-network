@@ -45,7 +45,7 @@ impl TestNode {
             idle_timeout_secs: 30,
             ..NodeConfig::default()
         };
-        let state = NodeState::new(identity, config, trust, messages, chunks, events_tx);
+        let state = NodeState::new(identity, config, trust, messages, chunks, events_tx, None);
         Self {
             state,
             events,

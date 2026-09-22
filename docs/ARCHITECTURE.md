@@ -110,5 +110,10 @@ that frames, encrypts, decrypts and enforces read/write timeouts.
   respective transport halves, connected by a bounded queue.
 - Stale connections are removed by connection id, never by uid alone.
 - All queues, frames and descriptors have explicit size caps.
-- Shutdown is cooperative: workers observe a cancellation signal and drain
-  bounded queues before exit.
+- Shutdown is cooperative: SIGINT and SIGTERM both set a cancellation signal,
+  the connection pool closes its writer queues so each task drains what it
+  already holds, and the runtime waits a bounded grace period for the tasks to
+  finish (`packaging/fantuan-node.service` stops the node this way).
+- Anything that must not regress across a restart is either persisted (relay
+  nonce reservations) or re-derived from persisted state (routes, from
+  redialled peers and gossip) — never kept only in memory by assumption.

@@ -57,6 +57,9 @@ pub struct NodeConfig {
     pub max_frames_per_sec: u32,
     /// Require a vouch from the forwarding peer for third-party descriptors.
     pub require_vouch_for_gossip: bool,
+    /// Redial peers known from the trust store when the node starts, so a
+    /// restart rejoins the network without operator action.
+    pub redial_known_peers: bool,
 }
 
 impl Default for NodeConfig {
@@ -80,6 +83,7 @@ impl Default for NodeConfig {
             min_round_trust: 0,
             max_frames_per_sec: 500,
             require_vouch_for_gossip: false,
+            redial_known_peers: true,
         }
     }
 }
@@ -120,6 +124,11 @@ impl NodeConfig {
     /// Path of the content-addressed chunk cache.
     pub fn chunks_db_path(&self) -> PathBuf {
         self.data_dir.join("chunks.redb")
+    }
+
+    /// Path of the relay nonce reservation file.
+    pub fn relay_nonce_path(&self) -> PathBuf {
+        self.data_dir.join("relay.nonce")
     }
 
     /// Path of the local control socket, if enabled.

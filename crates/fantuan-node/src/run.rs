@@ -51,6 +51,7 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
         messages,
         chunks,
         events_tx,
+        Some(config.relay_nonce_path()),
     );
 
     println!("fantuan-node running");
@@ -104,10 +105,9 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let shutdown = shutdown_tx.clone();
     tokio::spawn(async move {
-        if tokio::signal::ctrl_c().await.is_ok() {
-            println!("shutdown requested");
-            let _ = shutdown.send(true);
-        }
+        wait_for_shutdown_signal().await;
+        println!("shutdown requested");
+        let _ = shutdown.send(true);
     });
 
     if let Some(socket) = config.control_socket_path() {
@@ -181,6 +181,13 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
 
     let mut peers = config.peers.clone();
     peers.extend(extra_peers);
+    if config.redial_known_peers {
+        let known = known_peer_destinations(&state, &destination);
+        if !known.is_empty() {
+            println!("  redialing:   {} known peer(s)", known.len());
+        }
+        peers.extend(known);
+    }
     peers.sort();
     peers.dedup();
     for destination in peers {
@@ -197,8 +204,43 @@ pub async fn run(config: NodeConfig, extra_peers: Vec<String>) -> Result<()> {
             break;
         }
     }
+
+    // Close the writer queues and let the connection tasks flush what they
+    // already hold. Service managers (systemd) expect a clean stop, not a
+    // half-written frame.
+    state.pool.close_all();
+    let deadline = Instant::now() + Duration::from_secs(DRAIN_TIMEOUT_SECS);
+    while state.pool.live() > 0 && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let remaining = state.pool.live();
+    if remaining > 0 {
+        tracing::warn!(remaining, "shutdown grace period expired");
+    }
     println!("fantuan-node stopped");
     Ok(())
+}
+
+/// Seconds to wait for connection tasks to flush queued frames.
+pub const DRAIN_TIMEOUT_SECS: u64 = 3;
+
+/// Wait for SIGINT or SIGTERM.
+///
+/// SIGTERM matters: `systemctl stop` sends it, and a node that only listens
+/// for Ctrl-C would be killed with its queues full.
+async fn wait_for_shutdown_signal() {
+    match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+        Ok(mut sigterm) => {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = sigterm.recv() => {}
+            }
+        }
+        Err(error) => {
+            tracing::warn!("cannot listen for SIGTERM ({error}); Ctrl-C only");
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
 }
 
 /// Connect to a peer, handshake, optionally send a message, then ping.
@@ -358,6 +400,37 @@ fn pin_peer(state: &Arc<NodeState>, peer: &peer::BoundPeer) -> Result<()> {
         time::now_unix(),
     )?;
     Ok(())
+}
+
+/// Destinations of peers we already know, so a restart rejoins the network.
+///
+/// Routes are learned from gossip and are not persisted, but the descriptors
+/// that carry them are: reconnecting to stored peers is what lets a restarted
+/// node rebuild its routing table. Bounded, because a large trust store must
+/// not turn startup into a dial burst.
+fn known_peer_destinations(state: &Arc<NodeState>, own_destination: &str) -> Vec<String> {
+    const MAX_REDIAL: usize = 16;
+    let Ok(store) = state.trust.lock() else {
+        return Vec::new();
+    };
+    let Ok(peers) = store.peers(MAX_REDIAL) else {
+        return Vec::new();
+    };
+    let mut destinations = Vec::new();
+    for record in peers {
+        let Ok(Some((bytes, _signature))) = store.descriptor_of(&record.fingerprint) else {
+            continue;
+        };
+        let Ok(descriptor) = fantuan_identity::Descriptor::from_canonical(&bytes) else {
+            tracing::debug!(peer = record.fingerprint, "stored descriptor unreadable");
+            continue;
+        };
+        if descriptor.i2p_destination.is_empty() || descriptor.i2p_destination == own_destination {
+            continue;
+        }
+        destinations.push(descriptor.i2p_destination);
+    }
+    destinations
 }
 
 fn short(fingerprint: &str) -> &str {

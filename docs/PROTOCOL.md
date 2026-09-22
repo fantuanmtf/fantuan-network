@@ -196,9 +196,11 @@ DeleteRequest  { sender, target, timestamp, signature }
 Both interfaces are local-only and are not part of the peer protocol.
 
 - **Control socket** (`data_dir/control.sock`, mode 0600, newline-delimited
-  JSON): `status`, `post`, `forum`, `read`, `read_forum`, `send`, `peers`,
-  `events`. The `events` command switches the connection to a stream of
-  event lines (`channel`, `forum`, `message`, `relay`).
+  JSON): `status`, `post`, `forum`, `read`, `read_forum`, `send`, `anon`,
+  `file_put`, `file_get`, `files`, `peers`, `reinstate`, `events`. The
+  `events` command switches the connection to a stream of event lines
+  (`channel`, `forum`, `message`, `relay`, `anonymous`, `peer_evicted`).
+  `reinstate {uid}` clears a peer's DC-Net strikes and lifts an eviction.
 - **IRC bridge** (optional, bind address from `irc_addr`, loopback
   recommended): `NICK`, `USER`, `JOIN`, `PART`, `PRIVMSG`, `PING`, `QUIT`.
   `PRIVMSG #channel :text` publishes a channel message; stored channel
@@ -247,9 +249,13 @@ DcRoundShare { channel, round_id, peer_uid, xored_payload, signature }
   message-carrying share **last** once every other share arrived. Every node
   XORs all shares and extracts the checksummed message frame
   (`[u32 length][BLAKE3 checksum][message][zero pad]`).
-- Round ids advance by exactly one (`+1`); far-future ids are rejected.
-  Simultaneous initiations are resolved by comparing initiator fingerprints
-  (the smaller wins; the loser aborts before sending a message share).
+- Round ids are the initiator's wall-clock milliseconds, quantised to 100 ms
+  (`ROUND_ID_GRANULARITY_MS`) and floored by the highest id seen, so they are
+  comparable between nodes and never repeat. An id at or below the current one
+  is stale; an id more than `MAX_FUTURE_SKEW_MS` (30 s) ahead is refused.
+  Simultaneous initiations share one id and are resolved by comparing
+  initiator fingerprints (the smaller wins; the loser aborts before sending a
+  message share and retries).
 - Shares are signed by the sender's OpenPGP key and verified against the
   signer's stored certificate. Unknown signers are rejected.
 - Limits: 2..=16 participants, payload length 36..=4096 bytes, deadline
@@ -257,9 +263,13 @@ DcRoundShare { channel, round_id, peer_uid, xored_payload, signature }
 - Rounds require direct connectivity between all participants (mesh); the
   scheduler only selects currently connected, non-evicted peers.
 - Expired rounds with missing shares report the missing participants; three
-  strikes evict a peer from future rounds. Strikes are **cumulative over the
-  lifetime of the process**, not consecutive, and no reinstate path is wired
-  (see section 13.9).
+  strikes evict a peer from future rounds. Strikes are **consecutive**: a
+  completed round clears them (`ReputationTracker::reward`, driven by
+  `RoundAction::completed`). An evicted peer is reinstated with the `reinstate`
+  control command, or comes back when the process restarts.
+- A round of our own that expires with **no** participants is not attributed
+  to anyone: it usually means our start was already stale, and blaming the
+  whole participant set would let one such race evict honest peers.
 
 ### Traffic shaping
 
@@ -291,10 +301,11 @@ Every frame sent by a shaped connection is padded into one of the buckets
 - Handshake timeout: 10 seconds.
 - Idle read timeout: 120 seconds.
 - Write timeout per frame: 15 seconds.
-- Any signature, size or binding failure closes the connection; errors are
-  logged without secrets. The implementation currently also closes the
-  connection on non-fatal admission and routing rejections, which is stricter
-  than this specification; see section 13.4.
+- Any signature, size or binding failure on the peer's own material closes the
+  connection; errors are logged without secrets.
+- Rejections of objects the peer did not author — relayed envelopes, flooded
+  channel messages and chunks, unservable chunk requests — drop the object and
+  keep the session (`fantuan-node::reject::Dropped`, section 13.4).
 
 ## 13. Implementation status and known gaps (v0.1.0)
 
@@ -303,6 +314,10 @@ here because the conventions require unwired functionality to be either
 deleted or explicitly documented, and because every security claim must be
 backed by a test. None of them are silent: each has an owner phase in
 `docs/ROADMAP.md`.
+
+Entries marked **Resolved in Phase 7** are kept, with the regression test that
+proves the fix, so the next review does not have to rediscover them. The
+remaining entries are Phase 8/9 work.
 
 ### 13.1 Timing shaping is not wired
 
@@ -322,30 +337,33 @@ all. Scheduled: Phase 8.
 
 ### 13.3 Relay admission and routes do not survive a restart
 
-The relay nonce counter starts at 1 on every process start
-(`crates/fantuan-node/src/state.rs`), while receivers keep `last_nonce` per
-verified origin in memory. A restarted node is therefore treated as a
-replayer by peers that have not restarted. Routing tables are also rebuilt
-from scratch, so a restarted node answers relay attempts with "no route".
+**Resolved in Phase 7.** Outbound relay nonces now come from
+`fantuan-node::nonce::RelayNonce`, which persists a reservation block before
+handing out any nonce inside it and floors the counter at the wall clock, so a
+restarted node never repeats a nonce. Peers we already know are redialled at
+startup (`redial_known_peers`, default on), which rebuilds routing tables from
+gossip. Regression test: `relay_resilience.rs::relay_survives_a_sender_restart`.
 
 ### 13.4 Rejected objects close the connection
 
-`handle_object` returns an error and `connection.rs` breaks the session loop
-for any rejected object, including non-fatal cases such as an expired or
-rate-limited relay, a relay with no route, and a channel message from an
-unknown sender. Section 12 of this document describes this as intended
-behaviour for signature, size and binding failures; applying it to admission
-and routing rejections lets a peer (or a plain restart, see 13.3) tear down a
-link it does not own. Scheduled: Phase 7.
+**Resolved in Phase 7.** Rejections are classified: an object that is not the
+peer's own — a relayed envelope, a flooded channel message or chunk, an
+unservable chunk request — now returns `fantuan-node::reject::Dropped` and
+drops the object while the session stays up. Signature, size, encoding and
+binding failures on the peer's own material remain fatal, as section 12
+requires. Regression test:
+`relay_resilience.rs::rejected_relays_keep_the_session_alive`.
 
 ### 13.5 Round ids advance by exactly one
 
-`RoundTracker::mark_seen` accepts only `current + 1`. A participant that is
-absent from one round, or that misses a start, desynchronises permanently:
-its own starts are rejected by peers that advanced, and their starts are
-rejected by it. This requires every node to observe an identical participant
-set in every round, which does not hold outside a full mesh. Scheduled:
-Phase 7.
+**Resolved in Phase 7.** Round ids are wall-clock milliseconds of the
+initiator, quantised to [`ROUND_ID_GRANULARITY_MS`], floored by the highest id
+seen. A node that observed no round is therefore not behind its peers and can
+initiate: its id comes from its own clock. Simultaneous initiators land on the
+same id and are resolved by the existing initiator tie-break. Ids at or below
+the current one are stale; ids more than `MAX_FUTURE_SKEW_MS` ahead are
+refused. Regression test:
+`dcnet_partial_mesh.rs::a_node_outside_the_rounds_can_still_initiate`.
 
 ### 13.6 `DcRoundStart` is unsigned
 
@@ -373,8 +391,7 @@ display line. Scheduled: Phase 8.
 
 ### 13.9 Reputation is a one-way ratchet
 
-`ReputationTracker::reward` and `::reinstate` have no callers anywhere in the
-workspace, and strikes are cumulative rather than consecutive as the module
-documentation states. Three lifetime dropouts therefore evict a peer for the
-rest of the process, and the reinstate path described in section 11 does not
-exist. Scheduled: Phase 7.
+**Resolved in Phase 7.** `reward` is driven by completed rounds, so strikes are
+consecutive as documented, and `reinstate` is reachable through the `reinstate`
+control command (section 9). A round of our own that nobody joined is no
+longer attributed to the participants.

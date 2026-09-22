@@ -10,7 +10,7 @@
 | Simulation (long) | large scenarios, many seeds | `scripts/run-anon-analysis.sh` | no (manual/nightly) |
 | I2P integration | real SAM sessions against i2pd | `cargo test -p fantuan-transport --features i2p-integration -- --ignored` | no (feature-gated) |
 
-Current baseline: 207 tests pass in `cargo test --workspace --release`
+Current baseline: 223 tests pass in `cargo test --workspace --release`
 (0 failed, 2 ignored — the I2P integration tests above).
 
 Gap: `analysis/` (the Python analyzer) has **no test suite and does not run

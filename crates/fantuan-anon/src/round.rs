@@ -6,10 +6,34 @@ use fantuan_msg::DCNET_MAX_DEADLINE_SECS;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-/// Single monotonic round counter.
+/// How far ahead of the local clock an announced round id may be, in
+/// milliseconds.
 ///
-/// Round ids may only advance by exactly one, so a malicious far-future id
-/// cannot push a node past legitimate rounds (split-brain hardening).
+/// Bounds how far a malicious peer can push the counter, without rejecting the
+/// legitimate rounds of a peer whose clock runs slightly fast.
+pub const MAX_FUTURE_SKEW_MS: u64 = 30_000;
+
+/// Granularity of round ids, in milliseconds.
+///
+/// Initiators that start within the same window produce the *same* id, which
+/// the driver resolves with its deterministic initiator tie-break: one round
+/// proceeds, the other is retried. Two rounds that ran concurrently under one
+/// id would mix their shares, so a collision must be resolved, never merged.
+pub const ROUND_ID_GRANULARITY_MS: u64 = 100;
+
+/// Monotonic round counter with a clock floor.
+///
+/// Round ids are wall-clock milliseconds of the initiator, floored by the
+/// highest id seen so far. Two properties follow, and both are needed:
+///
+/// * Ids advance even for a node that never observed a round (its own clock
+///   moves), so counters cannot diverge and leave one node unable to initiate
+///   while its peers wait for ids that will never arrive. A pure
+///   `current + 1` counter had exactly that failure: one missed round, or one
+///   difference in participant sets, desynchronised a node permanently.
+/// * An id at or below the current one is stale and rejected (replay
+///   hardening), and an id beyond [`MAX_FUTURE_SKEW_MS`] is refused
+///   (split-brain hardening).
 pub struct RoundTracker {
     current_round_id: u64,
 }
@@ -33,20 +57,24 @@ impl RoundTracker {
         self.current_round_id
     }
 
-    /// Advance by exactly one (initiator side).
-    pub fn next_round(&mut self) -> u64 {
-        self.current_round_id += 1;
+    /// Next round id we may initiate, given the current time in milliseconds.
+    pub fn next_round(&mut self, now_ms: u64) -> u64 {
+        let base = (now_ms / ROUND_ID_GRANULARITY_MS) * ROUND_ID_GRANULARITY_MS;
+        self.current_round_id = self.current_round_id.max(base).saturating_add(1);
         self.current_round_id
     }
 
-    /// Accept a round id observed from the network; only `current + 1`.
-    pub fn mark_seen(&mut self, round_id: u64) -> bool {
-        if round_id == self.current_round_id + 1 {
-            self.current_round_id = round_id;
-            true
-        } else {
-            false
+    /// Accept a round id observed from the network.
+    ///
+    /// Accepted when it is ahead of the current id and not implausibly far in
+    /// the future; stale ids and far-future ids are rejected.
+    pub fn mark_seen(&mut self, round_id: u64, now_ms: u64) -> bool {
+        if round_id <= self.current_round_id || round_id > now_ms.saturating_add(MAX_FUTURE_SKEW_MS)
+        {
+            return false;
         }
+        self.current_round_id = round_id;
+        true
     }
 
     /// True when the round id already passed.
@@ -173,15 +201,58 @@ mod tests {
     use fantuan_msg::{pad_message, unpad_message};
 
     #[test]
-    fn tracker_only_advances_by_one() {
+    fn tracker_uses_the_clock_and_stays_monotonic() {
         let mut tracker = RoundTracker::new();
-        assert!(tracker.mark_seen(1));
-        assert!(!tracker.mark_seen(3));
-        assert!(!tracker.mark_seen(100));
-        assert_eq!(tracker.current(), 1);
-        assert!(tracker.is_stale(1));
-        assert_eq!(tracker.next_round(), 2);
-        assert!(tracker.mark_seen(3));
+        let first = tracker.next_round(1_000);
+        assert_eq!(first, 1_001);
+        assert!(
+            tracker.mark_seen(first + 1_000, 1_500),
+            "a peer's later round is accepted"
+        );
+        assert_eq!(tracker.current(), first + 1_000);
+        assert!(
+            tracker.next_round(1_500) > first + 1_000,
+            "our next id stays ahead of everything seen"
+        );
+    }
+
+    #[test]
+    fn tracker_rejects_stale_and_far_future_ids() {
+        let mut tracker = RoundTracker::new();
+        assert!(tracker.mark_seen(5_000, 4_000));
+        assert!(!tracker.mark_seen(4_999, 4_000), "stale id");
+        assert!(!tracker.mark_seen(5_000, 4_000), "replay");
+        assert!(tracker.is_stale(5_000));
+        assert!(
+            !tracker.mark_seen(4_000 + MAX_FUTURE_SKEW_MS + 1, 4_000),
+            "an id beyond the skew bound must not burn the id space"
+        );
+        assert!(tracker.mark_seen(4_000 + MAX_FUTURE_SKEW_MS, 4_000));
+    }
+
+    #[test]
+    fn a_lagging_node_can_still_initiate() {
+        // The regression that a plain `current + 1` counter caused: a node
+        // that never saw a round is far behind its peers and every start it
+        // sends is rejected as stale, so it can never initiate again.
+        let mut lagging = RoundTracker::new();
+        let mut ahead = RoundTracker::new();
+        assert!(ahead.mark_seen(9_000, 9_000));
+        assert!(ahead.mark_seen(9_500, 9_500));
+
+        let mine = lagging.next_round(9_600);
+        assert!(mine > 9_500, "a clock-based id is comparable, not behind");
+        assert!(ahead.mark_seen(mine, 9_600), "the ahead node accepts it");
+    }
+
+    #[test]
+    fn simultaneous_initiators_agree_on_the_same_id() {
+        // Same window means the same id, which the driver resolves by
+        // initiator tie-break; different ids would silently make one round
+        // invisible to the other node.
+        let mut alice = RoundTracker::new();
+        let mut bob = RoundTracker::new();
+        assert_eq!(alice.next_round(1_040), bob.next_round(1_060));
     }
 
     #[test]

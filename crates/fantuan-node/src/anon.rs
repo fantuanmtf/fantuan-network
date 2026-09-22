@@ -170,6 +170,7 @@ pub fn handle_round(state: &Arc<NodeState>, object: &Object) -> Result<()> {
 
     let mut outgoing: Vec<(String, Object)> = Vec::new();
     let mut extracted = Vec::new();
+    let mut completed = Vec::new();
     {
         let mut driver: std::sync::MutexGuard<'_, RoundDriver> = state
             .rounds
@@ -178,7 +179,23 @@ pub fn handle_round(state: &Arc<NodeState>, object: &Object) -> Result<()> {
         let action = driver.handle(object, &context);
         outgoing.extend(action.outgoing);
         extracted.extend(action.extracted);
+        completed.extend(action.completed);
         outgoing.extend(driver.drain_pending_outgoing());
+    }
+
+    // A completed round proves every participant sent its share, so strikes
+    // are consecutive rather than cumulative.
+    if !completed.is_empty() {
+        let mut reputation = state
+            .reputation
+            .lock()
+            .map_err(|_| anyhow!("reputation tracker poisoned"))?;
+        for completion in &completed {
+            for participant in &completion.participants {
+                reputation.reward(participant);
+            }
+            tracing::debug!(round_id = completion.round_id, "round completed");
+        }
     }
 
     send_outgoing(state, outgoing);

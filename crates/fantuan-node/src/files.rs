@@ -5,6 +5,7 @@
 //! recipient. Retrieval asks the DHT-closest peers for missing chunks with
 //! TTL-bound requests and a reverse-path so responses travel back.
 
+use crate::reject::Dropped;
 use crate::relay::cert_bytes_for;
 use crate::state::{NodeEvent, NodeState};
 use crate::store::StoredManifest;
@@ -108,12 +109,18 @@ pub fn handle_file_chunk(
     peer_cert: &[u8],
     chunk: FileChunk,
 ) -> Result<bool> {
-    let cert_bytes = if chunk.owner == peer_fingerprint {
+    let own = chunk.owner == peer_fingerprint;
+    let cert_bytes = if own {
         peer_cert.to_vec()
     } else {
-        cert_bytes_for(state, &chunk.owner)?
+        // Chunks replicate across the network, so the owner of a chunk we
+        // receive is usually a third party: an unknown owner drops the chunk
+        // and keeps the session.
+        cert_bytes_for(state, &chunk.owner).map_err(Dropped::wrap)?
     };
-    chunk.verify_cert_bytes(&cert_bytes)?;
+    chunk
+        .verify_cert_bytes(&cert_bytes)
+        .map_err(|error| Dropped::classify(error, own))?;
 
     let hash = hash_array(&chunk);
     let object = Object::FileChunk(chunk.clone()).to_canonical_bytes()?;
@@ -153,7 +160,11 @@ pub fn handle_chunk_request(
     let hash = request.hash.into_array();
 
     if let Some(bytes) = state.chunks.get(&hash)? {
-        state.pool.try_send(peer_fingerprint, bytes)?;
+        // A saturated writer queue is not a peer violation: drop the answer.
+        state
+            .pool
+            .try_send(peer_fingerprint, bytes)
+            .map_err(Dropped::wrap)?;
         return Ok(());
     }
     if request.requester == state.fingerprint() {

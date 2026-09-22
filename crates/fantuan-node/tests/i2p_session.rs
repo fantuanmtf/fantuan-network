@@ -136,7 +136,7 @@ fn node_state(
         ..NodeConfig::default()
     };
     (
-        NodeState::new(identity, config, trust, messages, chunks, events_tx),
+        NodeState::new(identity, config, trust, messages, chunks, events_tx, None),
         dir,
         events,
     )

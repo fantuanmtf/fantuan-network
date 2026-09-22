@@ -164,16 +164,19 @@ the review.
 |---|-------|---------|
 | F1 | Epoch batching and jitter shipped (PROTOCOL.md, ATTACKS.md, ROADMAP Phase 5) | `EpochBatcher`/`jitter_millis` have no call sites; only padding and cover are wired |
 | F2 | "221+ workspace tests" (SECURITY_REPORT.md) | 207 tests pass; the commit message was right and the report was not |
-| F3 | Evicted peers can be reinstated (PROTOCOL.md, ATTACKS.md) | `reward`/`reinstate` are unreachable and strikes are cumulative, so eviction is permanent |
+| F3 | Evicted peers can be reinstated (PROTOCOL.md, ATTACKS.md) | `reward`/`reinstate` were unreachable and strikes cumulative, so eviction was permanent — fixed in Phase 7 |
 
 ### 4.2 Defects that break multi-node operation
 
-| # | Defect | Effect |
-|---|--------|--------|
-| D1 | Relay nonces restart at 1 and routes are not persisted | A restarted node is treated as a replayer and answers relay attempts with "no route" |
-| D2 | Any rejected object breaks the session loop | A crafted relay, or an ordinary restart, tears down the link instead of dropping a frame |
-| D3 | Round tracker accepts only `current + 1` | One missed round or a divergent participant set desynchronises DC-Net permanently |
-| D4 | Strikes are cumulative with no reinstate path | Three lifetime dropouts evict a peer forever |
+All four were fixed in Phase 7; `docs/PROTOCOL.md` §13.3–§13.5 and §13.9 carry
+the resolution and the regression test for each.
+
+| # | Defect | Effect | Status |
+|---|--------|--------|--------|
+| D1 | Relay nonces restart at 1 and routes are not persisted | A restarted node is treated as a replayer and answers relay attempts with "no route" | fixed |
+| D2 | Any rejected object breaks the session loop | A crafted relay, or an ordinary restart, tears down the link instead of dropping a frame | fixed |
+| D3 | Round tracker accepts only `current + 1` | One missed round or a divergent participant set desynchronises DC-Net permanently | fixed (clock-derived ids) |
+| D4 | Strikes are cumulative with no reinstate path | Three lifetime dropouts evict a peer forever | fixed |
 
 ### 4.3 Weaknesses in the security evidence
 
@@ -199,37 +202,56 @@ The order matters: correctness first, then the anonymous layer's closed loop,
 then trustworthy evidence, then the mixnet. Building a mixnet on gates that
 are true by construction would produce a system that is confident and wrong.
 
-### Phase 7 — Reliability and invariants
+### Phase 7 — Reliability and invariants (done)
 
-1. Make relay admission and routing restart-safe (persisted nonce high-water
-   mark or a restart-safe window; persisted or re-derived routes; automatic
-   re-dial of known peers from stored descriptors).
-2. Downgrade non-fatal rejections to dropped frames; reserve session teardown
-   for signature, size, encoding and binding failures (D2, PROTOCOL §13.4).
-3. Replace the strict round counter with a windowed tracker plus a recovery
-   path for lagging nodes (D3, PROTOCOL §13.5).
-4. Make strikes consecutive, wire `reward`/`reinstate` or delete the claim
-   (D4/F3, PROTOCOL §13.9).
-5. Handle SIGTERM and drain queues before exit; add a systemd unit.
+1. Relay admission and routing are restart-safe: `fantuan-node::nonce`
+   persists a reservation block before handing out a nonce and floors the
+   counter at the wall clock, and stored peers are redialled at startup
+   (`redial_known_peers`), which rebuilds routes from gossip (D1).
+2. Non-fatal rejections drop the object instead of the session
+   (`fantuan-node::reject::Dropped`); signature, size, encoding and binding
+   failures on the peer's own material stay fatal (D2).
+3. The round counter became a **clock-derived** id — quantised wall-clock
+   milliseconds, floored by the highest id seen — rather than a `+1` counter
+   with a window. A pure counter cannot survive divergent participant sets:
+   whichever node is behind can never initiate. Ids are now comparable across
+   nodes, and simultaneous initiators land on one id and use the existing
+   tie-break (D3).
+4. Strikes are consecutive (`reward` is driven by completed rounds) and
+   `reinstate` is reachable through the control socket; a round of our own
+   that nobody joined is no longer attributed to anyone (D4/F3).
+5. SIGTERM is handled alongside Ctrl-C, writer queues are closed and drained
+   within a bounded grace period, and `packaging/fantuan-node.service` ships a
+   systemd user unit.
 
-Exit: three new integration tests — relay survives a node restart; a rejected
-or expired relay leaves the connection alive; a four-node non-full-mesh
-topology still converges a DC-Net round.
+Exit met — 223 tests pass (0 failed, 2 ignored I2P), `clippy -D warnings`,
+`cargo fmt --check` and the 1000-line limit are clean, and three new
+integration tests each verify to fail against the pre-Phase-7 behaviour:
+`relay_resilience.rs::relay_survives_a_sender_restart`,
+`relay_resilience.rs::rejected_relays_keep_the_session_alive`,
+`dcnet_partial_mesh.rs::a_node_outside_the_rounds_can_still_initiate`.
+
+Follow-on: round participation now assumes clocks within 30 s of each other.
+That trade-off is recorded in `docs/SECURITY.md` and carried as Phase 8 work
+(6.5 residual, report §6.5).
 
 ### Phase 8 — Anonymous layer closed loop
 
 1. Route extracted messages into channel/forum storage and flood, gated by an
    explicit opt-in setting, and expose them to the TUI, control socket, IRC
-   bridge and history sync (F4, PROTOCOL §13.8).
-2. Sign `DcRoundStart` and verify its initiator against the sending
+   bridge and history sync (PROTOCOL §13.8).
+2. Remove or bound the clock dependence that Phase 7's round ids introduced:
+   either carry a monotonic component in the round object, or document the
+   requirement where operators will see it.
+3. Sign `DcRoundStart` and verify its initiator against the sending
    connection (E5, PROTOCOL §13.6).
-3. Select a random participant subset per round instead of the whole
+4. Select a random participant subset per round instead of the whole
    connected set, to blunt intersection and selective-participation exposure.
-4. Wire epoch batching and jitter, or delete the primitives and the claim
+5. Wire epoch batching and jitter, or delete the primitives and the claim
    (F1, PROTOCOL §13.1).
-5. Give large objects a fixed-cell path so padding no longer stops at 8187
+6. Give large objects a fixed-cell path so padding no longer stops at 8187
    bytes, and shape the one-shot send path (E4, PROTOCOL §13.2).
-6. Replace long-term-key pairwise blocks with per-round ephemeral DH
+7. Replace long-term-key pairwise blocks with per-round ephemeral DH
    (E6, PROTOCOL §13.7).
 
 Exit: an anonymous post is visible in the TUI and through the IRC bridge and
