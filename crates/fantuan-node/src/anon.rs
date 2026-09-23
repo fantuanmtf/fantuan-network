@@ -6,7 +6,7 @@
 
 use crate::state::{NodeEvent, NodeState};
 use anyhow::{Result, anyhow, bail};
-use fantuan_anon::{RoundContext, RoundDriver};
+use fantuan_anon::{DriverContext, RoundDriver};
 use fantuan_identity::{Descriptor, TrustGraph, TrustLevel};
 use fantuan_msg::{DCNET_MAX_PARTICIPANTS, DCNET_PAYLOAD_LEN, Object};
 use std::collections::HashMap;
@@ -109,7 +109,7 @@ pub fn tick(state: &Arc<NodeState>) -> Result<()> {
     let (noise, certs) = context_maps(state)?;
     let my_uid = state.fingerprint();
     let secret = state.identity.noise_secret();
-    let context = RoundContext {
+    let context = DriverContext {
         identity: &state.identity,
         my_uid: &my_uid,
         noise_secret: &secret,
@@ -160,7 +160,7 @@ pub fn handle_round(state: &Arc<NodeState>, object: &Object) -> Result<()> {
     let (noise, certs) = context_maps(state)?;
     let my_uid = state.fingerprint();
     let secret = state.identity.noise_secret();
-    let context = RoundContext {
+    let context = DriverContext {
         identity: &state.identity,
         my_uid: &my_uid,
         noise_secret: &secret,

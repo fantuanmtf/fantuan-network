@@ -307,6 +307,51 @@ Rules that follow from the layout, all required:
   (sections 11.3 onward), so an object from one context can never be
   transplanted into another context that shares the same `RoundIdentity`.
 
+### 11.2 Round admission (receiver side)
+
+A receiver processes an inbound start in this fixed order:
+
+```
+1. stateless validation      format, version, ranges, canonical declared set
+2. signature verification    over RoundIdentity ‖ CTX_BYTES
+3. atomic state section      per initiator namespace
+4. classification, then commit
+```
+
+Classification depends only on the epoch and the initiator's stored state:
+`stale` when `epoch < watermark`; at `epoch == watermark`, `replay` when the
+instance and the context hash both match the accepted round and
+`equivocation` otherwise; `overflow` above `EPOCH_MAX_USABLE =
+u64::MAX − 2^16`. An epoch strictly between the watermark and that bound is a
+*candidate* and is accepted only when the start is authenticated, the context
+is valid and the declared set contains the receiver. Membership therefore
+gates the accept, never the classification: a round that names neither us nor
+anyone we know is still classified by its epoch, and it never moves the
+watermark — an initiator must not be able to advance our namespace by inviting
+strangers.
+
+Rules:
+
+- Only an accept writes state. A rejection of any kind MUST NOT move the
+  watermark, replace the accepted instance or context hash, enter share
+  collection or extraction, or produce a reputation event.
+- Unauthenticated input is never classified: it is dropped before step 3, so
+  no forged start can manufacture a stale, equivocation or overflow record.
+- Replay is only reported at the watermark epoch: an accepted round that a
+  later epoch superseded is classified `stale`, not `replay`.
+- The accepted state is made durable (append + fsync) *before* the in-memory
+  copy changes. A crash may therefore leave the namespace ahead of memory,
+  never behind; because a retry always mints a new epoch, being ahead costs
+  nothing.
+- If the durable write fails, the round MUST be refused and no state may
+  change (`Admission::StoreFailed`): the watermark *is* the replay defence, so
+  admitting without durability would silently drop it. Repeated failures are
+  an operator condition, not a peer-visible event.
+- Two receivers that see two conflicting starts for one epoch in opposite
+  orders accept different contexts. That divergence is specified and carries
+  no safety consequence: each receiver accepted exactly one context, refuses
+  every later round under that epoch, and each records the equivocation.
+
 The version-1 wire objects, still in force until the remaining parts of this
 section are rewritten, are:
 

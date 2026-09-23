@@ -246,6 +246,70 @@ mod tests {
     }
 
     #[test]
+    fn a_fresh_tracker_accepts_any_past_id() {
+        // Documents the replay window after a restart: staleness is measured
+        // against in-memory state (`current_round_id` starts at 0), and the
+        // only other bound is on the *future*. A process that has just
+        // started therefore accepts a round id from any time in the past.
+        let mut tracker = RoundTracker::new();
+        let ancient = 1;
+        assert!(
+            tracker.mark_seen(ancient, 1_700_000_000_000),
+            "an id from any earlier time passes"
+        );
+    }
+
+    #[test]
+    fn a_receiver_more_than_thirty_seconds_behind_rejects_honest_starts() {
+        // The tolerance is two-sided: an honest id is approximately real time,
+        // so a receiver whose clock lags by more than the future bound sees it
+        // as impossibly far ahead.
+        let now = 1_700_000_000_000;
+        let mut behind = RoundTracker::new();
+        assert!(
+            !behind.mark_seen(now, now - 31_000),
+            "a clock 31 s behind rejects an honest round"
+        );
+        let mut nearly = RoundTracker::new();
+        assert!(
+            nearly.mark_seen(now, now - 29_000),
+            "29 s behind still works"
+        );
+    }
+
+    #[test]
+    fn an_initiator_behind_the_latest_round_cannot_start_one() {
+        // Initiation is bounded by the high-water mark, not by the 30 s
+        // window: the id must exceed what peers have already seen, and that is
+        // approximately the newest round's timestamp.
+        let now = 1_700_000_000_000;
+        let mut ahead = RoundTracker::new();
+        assert!(ahead.mark_seen(now, now));
+
+        let mut behind = RoundTracker::new();
+        let id = behind.next_round(now - 5_000);
+        assert!(
+            !ahead.mark_seen(id, now),
+            "a clock 5 s behind the newest round produces a stale start"
+        );
+    }
+
+    #[test]
+    fn the_future_bound_is_strict() {
+        let now = 1_700_000_000_000;
+        let mut at_bound = RoundTracker::new();
+        assert!(
+            at_bound.mark_seen(now + MAX_FUTURE_SKEW_MS, now),
+            "exactly at the bound is accepted"
+        );
+        let mut beyond = RoundTracker::new();
+        assert!(
+            !beyond.mark_seen(now + MAX_FUTURE_SKEW_MS + 1, now),
+            "one millisecond past the bound is rejected"
+        );
+    }
+
+    #[test]
     fn simultaneous_initiators_agree_on_the_same_id() {
         // Same window means the same id, which the driver resolves by
         // initiator tie-break; different ids would silently make one round

@@ -104,6 +104,99 @@ async fn wait_for_route(node: &TestNode, destination: &str) {
     }
 }
 
+/// R12: the scheduler picks every connected peer as a participant without
+/// checking that they can reach each other. Shares are never relayed, so in a
+/// non-clique connected set the initiator completes the round while the others
+/// never do — silently — and the peers then blame each other for the shares
+/// they could not receive. No attacker is involved.
+#[tokio::test]
+async fn a_non_clique_participant_set_fails_silently_and_blames_peers() {
+    let mut alice = TestNode::new("alice");
+    let mut bob = TestNode::new("bob");
+    let mut carol = TestNode::new("carol");
+
+    // Bob and carol are both connected to alice, but not to each other.
+    let mut tasks = Vec::new();
+    tasks.extend(connect_pair(&alice, &bob));
+    tasks.extend(connect_pair(&alice, &carol));
+    wait_for_route(&alice, &bob.fingerprint).await;
+    wait_for_route(&alice, &carol.fingerprint).await;
+
+    alice
+        .state
+        .rounds
+        .lock()
+        .expect("round driver")
+        .set_deadline_secs(1);
+    anon::queue(&alice.state, "#anon", "triangle that is not one").expect("queue");
+    anon::tick(&alice.state).expect("tick");
+
+    assert_eq!(
+        recv_anonymous(&mut alice, 10).await,
+        "triangle that is not one",
+        "the initiator completes: it received every share"
+    );
+    assert!(
+        drain_anonymous(&mut bob).await.is_empty(),
+        "bob never receives carol's share, so it cannot extract"
+    );
+    assert!(
+        drain_anonymous(&mut carol).await.is_empty(),
+        "carol never receives bob's share, so it cannot extract"
+    );
+
+    // Bob's collector expires and reports carol, who did nothing wrong.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while strikes(&bob, &carol.fingerprint) == 0 && Instant::now() < deadline {
+        anon::tick(&bob.state).expect("tick");
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        strikes(&bob, &carol.fingerprint),
+        1,
+        "the unreachable peer is blamed for a missing share"
+    );
+
+    for task in tasks {
+        task.abort();
+    }
+}
+
+fn strikes(node: &TestNode, uid: &str) -> u32 {
+    node.state
+        .reputation
+        .lock()
+        .expect("reputation")
+        .strikes(uid)
+}
+
+async fn recv_anonymous(node: &mut TestNode, timeout_secs: u64) -> String {
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match node.events.try_recv() {
+            Ok(NodeEvent::Anonymous { text, .. }) => return text,
+            Ok(_) => continue,
+            Err(mpsc::error::TryRecvError::Empty) => {
+                assert!(Instant::now() < deadline, "no extraction arrived");
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+            Err(mpsc::error::TryRecvError::Disconnected) => panic!("event channel closed"),
+        }
+    }
+}
+
+/// Give a short grace period, then report anything that arrived.
+async fn drain_anonymous(node: &mut TestNode) -> Vec<String> {
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    let mut texts = Vec::new();
+    while let Ok(event) = node.events.try_recv() {
+        if let NodeEvent::Anonymous { text, .. } = event {
+            texts.push(text);
+        }
+    }
+    texts
+}
+
 #[tokio::test]
 async fn a_node_outside_the_rounds_can_still_initiate() {
     let mut alice = TestNode::new("alice");

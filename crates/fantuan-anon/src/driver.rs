@@ -28,7 +28,7 @@ pub const MAX_CONFLICT_RETRIES: u32 = 3;
 pub const MAX_COLLECTORS: usize = 16;
 
 /// Immutable context for driver calls.
-pub struct RoundContext<'a> {
+pub struct DriverContext<'a> {
     /// Our identity (used to sign shares).
     pub identity: &'a Identity,
     /// Our fingerprint.
@@ -153,6 +153,14 @@ impl RoundDriver {
         self.queue.len()
     }
 
+    /// Highest round id this driver has accepted or issued.
+    ///
+    /// Read-only introspection: how far the local tracker has been moved, and
+    /// by what.
+    pub fn current_round_id(&self) -> u64 {
+        self.tracker.current()
+    }
+
     /// Number of rounds still collecting.
     pub fn active_rounds(&self) -> usize {
         self.collectors.len()
@@ -162,7 +170,7 @@ impl RoundDriver {
     pub fn initiate_next(
         &mut self,
         participants: &[String],
-        ctx: &RoundContext,
+        ctx: &DriverContext,
     ) -> Result<Vec<(String, Object)>> {
         let Some((channel, text)) = self.queue.pop_front() else {
             return Ok(Vec::new());
@@ -182,7 +190,7 @@ impl RoundDriver {
         channel: &str,
         text: &str,
         participants: &[String],
-        ctx: &RoundContext,
+        ctx: &DriverContext,
     ) -> Result<Vec<(String, Object)>> {
         if text.len() + 36 > DCNET_PAYLOAD_LEN {
             return Err(AnonError::Round(format!(
@@ -245,7 +253,7 @@ impl RoundDriver {
     }
 
     /// Handle one incoming object.
-    pub fn handle(&mut self, object: &Object, ctx: &RoundContext) -> RoundAction {
+    pub fn handle(&mut self, object: &Object, ctx: &DriverContext) -> RoundAction {
         let mut action = match object {
             Object::DcRoundStart(start) => self.on_start(start, ctx),
             Object::DcRoundShare(share) => self.on_share(share, ctx),
@@ -259,7 +267,7 @@ impl RoundDriver {
     ///
     /// The scheduler calls this once per interval with the current context so
     /// expired rounds can be retried and dropouts reported.
-    pub fn tick(&mut self, ctx: &RoundContext) -> Vec<RoundFailure> {
+    pub fn tick(&mut self, ctx: &DriverContext) -> Vec<RoundFailure> {
         let expired: Vec<u64> = self
             .collectors
             .iter()
@@ -322,7 +330,7 @@ impl RoundDriver {
         std::mem::take(&mut self.pending_outgoing)
     }
 
-    fn on_start(&mut self, start: &DcRoundStart, ctx: &RoundContext) -> RoundAction {
+    fn on_start(&mut self, start: &DcRoundStart, ctx: &DriverContext) -> RoundAction {
         if start.validate().is_err() {
             return RoundAction::default();
         }
@@ -390,7 +398,7 @@ impl RoundDriver {
         action
     }
 
-    fn on_share(&mut self, share: &DcRoundShare, ctx: &RoundContext) -> RoundAction {
+    fn on_share(&mut self, share: &DcRoundShare, ctx: &DriverContext) -> RoundAction {
         if share.validate().is_err() {
             return RoundAction::default();
         }
@@ -500,7 +508,7 @@ impl RoundDriver {
         self.my_share_broadcast = false;
     }
 
-    fn retry_pending_with(&mut self, channel: &str, participants: &[String], ctx: &RoundContext) {
+    fn retry_pending_with(&mut self, channel: &str, participants: &[String], ctx: &DriverContext) {
         if self.retries >= MAX_CONFLICT_RETRIES {
             tracing::warn!("dropping anonymous message after {MAX_CONFLICT_RETRIES} retries");
             self.pending_message = None;
@@ -548,8 +556,8 @@ mod tests {
         node: &'a TestNode,
         noise: &'a HashMap<String, [u8; 32]>,
         certs: &'a HashMap<String, Vec<u8>>,
-    ) -> RoundContext<'a> {
-        RoundContext {
+    ) -> DriverContext<'a> {
+        DriverContext {
             identity: &node.identity,
             my_uid: &node.uid,
             noise_secret: &node.secret,
@@ -573,7 +581,7 @@ mod tests {
 
     struct Pump<'a> {
         drivers: Vec<&'a mut RoundDriver>,
-        contexts: Vec<&'a RoundContext<'a>>,
+        contexts: Vec<&'a DriverContext<'a>>,
         queue: Vec<(String, Object)>,
         delivered: Vec<Extracted>,
     }
@@ -745,6 +753,90 @@ mod tests {
             failures[0].missing,
             vec![carol.uid.clone()],
             "the silent participant is the one attributed"
+        );
+    }
+
+    #[test]
+    fn a_replayed_round_is_accepted_and_extracted_again() {
+        // Finding R6 (docs/ROUND_SYNC_REVIEW.md): round-id replay protection
+        // is in-memory, and pairwise pads depend only on `(pair, round_id)`,
+        // so captured wire objects replay into a restarted peer unchanged.
+        let alice = node("alice");
+        let bob = node("bob");
+        let (noise, certs) = maps(&[&alice, &bob]);
+        let ctx_a = context(&alice, &noise, &certs);
+        let ctx_b = context(&bob, &noise, &certs);
+        let participants = vec![alice.uid.clone(), bob.uid.clone()];
+
+        let mut driver_a = RoundDriver::new();
+        let mut driver_b = RoundDriver::new();
+        let mut pending = driver_a
+            .initiate("#anon", "replayed message", &participants, &ctx_a)
+            .expect("initiate");
+        // Extractions are collected per node: initiator and participant each
+        // complete their own collector.
+        let mut alice_extracted: Vec<String> = Vec::new();
+        let mut bob_extracted: Vec<String> = Vec::new();
+        let mut captured: Vec<Object> = Vec::new();
+        for _ in 0..32 {
+            if pending.is_empty() {
+                break;
+            }
+            let (uid, object) = pending.remove(0);
+            if uid == bob.uid {
+                captured.push(object.clone());
+            }
+            let recipient_is_alice = uid == alice.uid;
+            let driver = if recipient_is_alice {
+                &mut driver_a
+            } else {
+                &mut driver_b
+            };
+            let ctx = if recipient_is_alice { &ctx_a } else { &ctx_b };
+            let action = driver.handle(&object, ctx);
+            let texts: Vec<String> = action.extracted.into_iter().map(|item| item.text).collect();
+            if recipient_is_alice {
+                alice_extracted.extend(texts);
+            } else {
+                bob_extracted.extend(texts);
+            }
+            pending.extend(action.outgoing);
+            pending.extend(driver.drain_pending_outgoing());
+        }
+        assert_eq!(alice_extracted, vec!["replayed message".to_string()]);
+        assert_eq!(bob_extracted, vec!["replayed message".to_string()]);
+        assert!(!captured.is_empty(), "the round produced objects for bob");
+
+        // A restarted bob: fresh driver, same identity and keys, empty
+        // tracker. The captured objects are replayed verbatim.
+        let mut restarted_a = RoundDriver::new();
+        let mut restarted_b = RoundDriver::new();
+        let mut replayed: Vec<String> = Vec::new();
+        let mut replay: Vec<(String, Object)> = captured
+            .into_iter()
+            .map(|object| (bob.uid.clone(), object))
+            .collect();
+        for _ in 0..32 {
+            if replay.is_empty() {
+                break;
+            }
+            let (uid, object) = replay.remove(0);
+            let recipient_is_alice = uid == alice.uid;
+            let driver = if recipient_is_alice {
+                &mut restarted_a
+            } else {
+                &mut restarted_b
+            };
+            let ctx = if recipient_is_alice { &ctx_a } else { &ctx_b };
+            let action = driver.handle(&object, ctx);
+            replayed.extend(action.extracted.into_iter().map(|item| item.text));
+            replay.extend(action.outgoing);
+            replay.extend(driver.drain_pending_outgoing());
+        }
+        assert_eq!(
+            replayed,
+            vec!["replayed message".to_string()],
+            "the replayed round extracts the same message again"
         );
     }
 

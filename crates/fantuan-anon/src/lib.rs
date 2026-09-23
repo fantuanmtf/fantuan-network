@@ -4,14 +4,19 @@
 //! round tracking, share authentication, dropout detection and reputation
 //! based eviction.
 
+pub mod admission;
 pub mod driver;
 pub mod error;
 pub mod reputation;
 pub mod round;
 pub mod share;
 
+pub use admission::{
+    Admission, AuthenticatedRound, EPOCH_MAX_USABLE, NamespaceState, NamespaceStore,
+    RoundAdmission, VolatileStore,
+};
 pub use driver::{
-    Extracted, MAX_CONFLICT_RETRIES, ROUND_DEADLINE_SECS, RoundAction, RoundContext, RoundDriver,
+    DriverContext, Extracted, MAX_CONFLICT_RETRIES, ROUND_DEADLINE_SECS, RoundAction, RoundDriver,
     RoundFailure,
 };
 pub use error::{AnonError, Result};

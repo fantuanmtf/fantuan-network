@@ -130,6 +130,23 @@ mod tests {
     }
 
     #[test]
+    fn a_restarted_receiver_forgets_nonce_history() {
+        // Relay anti-replay is receiver-side and per-process: the sender's
+        // nonce is durable, but the receiver's `last_nonce` table is not, so a
+        // restarted receiver admits an envelope it already saw, as long as the
+        // timestamp is inside the freshness window.
+        let mut before = AdmissionControl::new();
+        assert!(before.check("A", 5, 1000, 1000).is_ok());
+        drop(before);
+
+        let mut restarted = AdmissionControl::new();
+        assert!(
+            restarted.check("A", 5, 1000, 1000).is_ok(),
+            "the same envelope is admitted again after a restart"
+        );
+    }
+
+    #[test]
     fn tofu_pin() {
         let mut control = AdmissionControl::new();
         assert!(control.pin("A", b"cert-a").is_ok());
