@@ -6,8 +6,10 @@
 
 pub mod admission;
 pub mod driver;
+pub mod durable;
 pub mod error;
 pub mod reputation;
+pub mod reservation;
 pub mod round;
 pub mod share;
 
@@ -19,8 +21,13 @@ pub use driver::{
     DriverContext, Extracted, MAX_CONFLICT_RETRIES, ROUND_DEADLINE_SECS, RoundAction, RoundDriver,
     RoundFailure,
 };
+pub use durable::{DurableStore, IdentityFreshness, LOG_FILE, MARKER_FILE, StoreError};
 pub use error::{AnonError, Result};
 pub use reputation::{MAX_STRIKES, ReputationTracker};
+pub use reservation::{
+    DEFAULT_RESERVATION_BLOCK, EpochReservation, RESERVATION_FILE, ROLLBACK_REJECTION_LIMIT,
+    RollbackWatch,
+};
 pub use round::{RoundCollector, RoundTracker};
 pub use share::{
     compute_xor_share, derive_pair_share, sign_share, verify_share, xor_all, xor_in_place,

@@ -10,3 +10,6 @@ __pycache__/
 analysis/dist/
 reports/*
 !reports/.gitkeep
+
+# Local AI/tooling scratch
+.claude/

@@ -352,6 +352,52 @@ Rules:
   no safety consequence: each receiver accepted exactly one context, refuses
   every later round under that epoch, and each records the equivocation.
 
+### 11.3 Durable round state
+
+Three files per data directory, all mode 0600, all integers big endian, each
+record ending in an 8-byte integrity field (`BLAKE3(domain ‖ body)[..8]`; the
+review called this field a CRC):
+
+```
+rounds.state (58B) : "FTNRND01"(8) ‖ version(2) ‖ own_proto_id(32) ‖ created(8) ‖ checksum(8)
+rounds.log   (96B) : initiator(32) ‖ epoch(8) ‖ instance(16) ‖ context_hash(32) ‖ checksum(8)
+rounds.epoch (58B) : "FTNEPO01"(8) ‖ version(2) ‖ own_proto_id(32) ‖ reserved_upto(8) ‖ checksum(8)
+```
+
+- `rounds.log` is append-only: one record per accept, fsynced before the
+  accept becomes visible. Compaction rewrites one record per namespace through
+  a temporary file plus rename, so an interrupted compaction leaves either the
+  old log or the new one.
+- `rounds.epoch` reserves a block of epochs per durable write. After a restart
+  the cursor resumes at `reserved_upto + 1`, abandoning the remainder of the
+  previous block: a crash may skip epochs, never repeat one.
+- The marker (`rounds.state`) is the **only** bootstrap anchor. Whether the
+  node's identity is fresh is supplied explicitly by the caller (its `identity
+  init` path knows); directory contents are never used as a criterion.
+
+Failure matrix (HALT means the anonymous layer must not run until an operator
+acts; RECOVERABLE means the node proceeds after a defined local repair):
+
+| Condition | Initiator (reservation) | Receiver (marker + log) |
+|-----------|------------------------|-------------------------|
+| Fresh identity, no state files | initialize (ACCEPT) | initialize (ACCEPT) |
+| State files missing on an established node | HALT | HALT |
+| Corrupt marker/reservation (bad magic, version, checksum, truncation) | HALT | HALT |
+| Corrupt log record (complete record, bad checksum) | — | HALT |
+| Log not strictly increasing per namespace | — | HALT |
+| State belongs to another identity | HALT | HALT |
+| Torn tail record | — | RECOVERABLE: discard, truncate to the last complete record |
+| Crash after fsync, before publishing | RECOVERABLE: the reserved block is abandoned | RECOVERABLE: the epoch counts as accepted; a repeat is a replay, and the next epoch is still free |
+| Reservation cannot be persisted at runtime | RECOVERABLE: refuse that start, hand out no epoch | — |
+| Commit cannot be persisted at runtime | — | `StoreFailed`: refuse the round, old state unchanged, nothing classified, no round advances |
+| Epoch beyond `EPOCH_MAX_USABLE` | HALT initiation | reject (never wrap) |
+| Snapshot/backup rollback | HALT initiation once peers reject `ROLLBACK_REJECTION_LIMIT` consecutive starts, or once an equivocation is reported against this identity | **UNDETECTABLE — declared limitation**: the watermark regresses, the replay window for the affected identities reopens, and no local mechanism can tell that from a first arrival. Only instance randomness still holds: a rolled-back node never reuses key material. |
+
+A runtime persistence failure never yields a weaker state: the old state stays
+in place, no classification is produced, and no counter or round advances that
+depends on the failed commit. Repeated failures are an operator condition and
+do not, by themselves, escalate to HALT.
+
 The version-1 wire objects, still in force until the remaining parts of this
 section are rewritten, are:
 
